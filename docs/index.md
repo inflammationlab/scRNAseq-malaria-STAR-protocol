@@ -58,7 +58,7 @@ Data analysis notebooks and scripts describing the following sections:
       
       + _html report_: 
       
-         + `gt1`: [`02_2012_miguel_elisa_lox2_processing.html`](https://inflammationlab.github.io/scRNAseq-malaria-STAR-protocol/docs/reports/02_2012_miguel_elisa_lox2_processing.html) 
+         + `gt1`: [`02_2012_miguel_elisa_lox2_processing.html`](https://inflammationlab.github.io/scRNAseq-malaria-STAR-protocol/reports/02_2012_miguel_elisa_lox2_processing.html) 
 
          + `gt2`: [`01_2012_miguel_elisa_cre3_processing.html`](https://inflammationlab.github.io/scRNAseq-malaria-STAR-protocol/docs/01_2012_miguel_elisa_cre3_processing.html)
 
