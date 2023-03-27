@@ -5,3 +5,4 @@ docs/reports/09_2012_miguel_elisa_RNA_velocity_part1.html filter=lfs diff=lfs me
 docs/reports/09_2012_miguel_elisa_RNA_velocity_part2.html filter=lfs diff=lfs merge=lfs -text
 docs/reports/10_2012_miguel_elisa_plot_markers.html filter=lfs diff=lfs merge=lfs -text
 docs/reports/11_2012_miguel_elisa_func_enrich_plot_DEG_markers.html filter=lfs diff=lfs merge=lfs -text
+docs/01_2012_miguel_elisa_cre3_processing.html filter=lfs diff=lfs merge=lfs -text
