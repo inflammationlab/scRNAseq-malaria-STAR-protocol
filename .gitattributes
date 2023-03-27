@@ -1,8 +1,1 @@
 docs/reports/01_2012_miguel_elisa_cre3_processing.html filter=lfs diff=lfs merge=lfs -text
-docs/reports/02_2012_miguel_elisa_lox2_processing.html filter=lfs diff=lfs merge=lfs -text
-docs/reports/07_2012_miguel_elisa_cre3_lox2_integration_w_new_plots.html filter=lfs diff=lfs merge=lfs -text
-docs/reports/09_2012_miguel_elisa_RNA_velocity_part1.html filter=lfs diff=lfs merge=lfs -text
-docs/reports/09_2012_miguel_elisa_RNA_velocity_part2.html filter=lfs diff=lfs merge=lfs -text
-docs/reports/10_2012_miguel_elisa_plot_markers.html filter=lfs diff=lfs merge=lfs -text
-docs/reports/11_2012_miguel_elisa_func_enrich_plot_DEG_markers.html filter=lfs diff=lfs merge=lfs -text
-docs/01_2012_miguel_elisa_cre3_processing.html filter=lfs diff=lfs merge=lfs -text
