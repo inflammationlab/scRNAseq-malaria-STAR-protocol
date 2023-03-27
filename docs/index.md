@@ -76,7 +76,7 @@ Data analysis notebooks and scripts describing the following sections:
       
          + _R markdown notebook_: [09_2012_miguel_elisa_RNA_velocity_part1.Rmd](https://github.com/inflammationlab/scRNAseq-malaria-STAR-protocol/blob/main/report/09_2012_miguel_elisa_RNA_velocity_part1.Rmd) 
 
-         + _html report_: [07_2012_miguel_elisa_cre3_lox2_integration_w_new_plots.html](https://inflammationlab.github.io/scRNAseq-malaria-STAR-protocol/reports/07_2012_miguel_elisa_cre3_lox2_integration_w_new_plots.html)
+         + _html report_: [09_2012_miguel_elisa_RNA_velocity_part1.html](https://inflammationlab.github.io/scRNAseq-malaria-STAR-protocol/reports/09_2012_miguel_elisa_RNA_velocity_part1.html)
 
       3.2. 
       
