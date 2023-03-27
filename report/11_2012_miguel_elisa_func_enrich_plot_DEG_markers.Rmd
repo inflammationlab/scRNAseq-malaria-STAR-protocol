@@ -1,0 +1,1113 @@
+---
+title: 'Report: Functional enrichment and plot DEG/markers upon integrated Cre3 and Lox2 scRNA samples'
+author: "Jingtao Lilue and António Sousa - UBI-IGC (e-mail: <agsousa@igc.gulbenkian.pt>)"
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output: 
+  html_document:
+    toc: true 
+    toc_float: true
+    theme: united
+    code_folding: hide
+bibliography: bibliography.bib
+---
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## Request
+
+<br>
+
+This report includes a description and the results of the analyses requested by Elisa Jentho at 08/06/2021: 
+   
+   1 - Do functional enrichment analysis using only the functional database GO:BP. 
+  
+   2 - Re-do heatmaps of differential expression genes using log2 fold change values.
+
+   3 - Plot additional markers in the integrated overlay UMAPs. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	fig.align = "center",
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+```{r klippy, echo=FALSE}
+klippy::klippy(position = c('top', 'right'))
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## About this report
+
+<br>
+
+The R version used was `r paste0(version$major, ".", version$minor)` [@r]. This report was built with the `rmarkdown` R package (v.`r packageVersion("rmarkdown")`) [@rmarkdown_1; @rmarkdown_2; @rmarkdown_3]. See the full list of packages and versions used at the end of this report - **R packages used and respective versions**.
+
+The integrated 10x Lox2 and Cre3 samples processed previously were imported to plot the markers upon the UMAPs with the `Seurat` R package (v.`r packageVersion("Seurat")`) [@seurat_1; @seurat_2; @seurat_3; @seurat_4].
+
+The figures and tables displayed through the report can be download in *pdf* and *tab-separated* format by clicking on the bottom left **Download plot** and **Download table** button that appears after each plot and table, respectively. 
+
+```{r seed}
+
+## Set seed 
+set.seed(seed = 1024) # to keep reproducibility
+
+```
+
+```{r import packages, message=FALSE, warning=FALSE}
+
+## Import packages 
+
+library("dplyr", quietly = TRUE)
+library("DT", quietly = TRUE) # package to print nice in the html report 
+library("Seurat", quietly = TRUE)
+library("gplots", quietly = TRUE)
+library("Matrix", quietly = TRUE)
+library("ggplot2", quietly = TRUE)
+library("tidyr", quietly = TRUE)
+library("readxl", quietly = TRUE)
+library("gprofiler2", quietly = TRUE)
+library("ComplexHeatmap", quietly = TRUE)
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## Data analysis
+
+<br>
+
+### Import data
+
+<br>
+
+The **Cre3** and **Lox2** integrated samples were imported. 
+
+```{r import seu}
+
+## Import Seurat object with the re3 & Lox2 integrated samples
+
+# import obj integrated
+seu <- readRDS(file = "../results/int_28_05_21/R_objects/seu.rds")
+
+```
+
+It was also imported the differential gene expression tables obtained before. 
+
+```{r import dge}
+
+## Import DGE tables
+
+dge_tables <- "../results/int_28_05_21/tables/dge_tables"
+dge2import <- list.files(path = dge_tables, pattern = "clt_", full.names = TRUE)
+names(dge2import) <- lapply(basename(dge2import), function(x) strsplit(x = x, split = "_")[[1]][1:2] %>% 
+                              unlist(.) %>% paste(., collapse = "_")) %>% unlist(.)
+dge <- lapply(dge2import, function(x) read.table(file = x, header = TRUE, sep = "\t", 
+                                                 stringsAsFactors = FALSE))
+
+```
+
+It was also imported the markers to plot in the overlay integrated UMAPs as well as the markers for cluster 8 from the integrated Cre3 sample alone (`"PCHAS-130590"`, `"PCHAS-130630"`, `"PCHAS-130770"`, `"PCHAS-131600"`, `"PCHAS-134500"`). 
+
+```{r import markers}
+
+## Plot overlay markers for cluster 8 
+markers_clt8 <- c("PCHAS-130590", "PCHAS-130630", "PCHAS-130770", "PCHAS-131600", "PCHAS-134500")
+
+# import new markers
+markers2import <- "../data/markers_to_plot_08_06_21/MArkers.xlsx"
+markers_all <- read_excel(path = markers2import, col_names = FALSE)
+colnames(markers_all) <- "Genes"
+
+```
+
+The new markers to plot are highlighted below. 
+
+<br>
+
+```{r echo=FALSE}
+datatable(data = markers_all, extensions = "Buttons", 
+          caption = "Table with the list of new markers to plot/highlight in the overlay UMAPs of the integrated Cre3 and Lox2 samples. Imported from the excel file provided: Markers_for_UMAP.xlsx.", 
+          options = list(dom = "Blfrtip", buttons = c('csv', 'excel')))     
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+### Functional enrichment: GO:BP
+
+<br>
+
+In order to perform a functional enrichment analysis between the differentially expressed up- and down-regulated genes obtained from each pairwise comparison between each cluster across Cre3 *vs* Lox2, it was used the `gprofiler2` R package (v.`r packageVersion("gprofiler2")`) [@gprofiler2], an interface to the [g:Profiler](https://biit.cs.ut.ee/gprofiler/gost) web browser tool. The function `gost()` was applied in order to perform enrichment based on the list of up- or down-regulated genes, between each pairwise comparison (independently), against the annotated genes (domain_scope = "annotated") of the organism *Plasmodium chabaudi* (`organism = "pchabaudi"`). The gene lists were ordered by increasing adjusted *p*-value (`ordered_query = TRUE`) in order to generate a GSEA (Gene Set Enrichment Analysis) style *p*-values. This allows to start the enrichment testing from the top most biological relevant genes with subsequent tests involving larger sets of genes. In addition, only statistically significant (`user_threshold = 0.05`) enriched functions are returned (`significant = TRUE`) after multiple testing correction with the default method g:SCS (`correction_method = "g_SCS"`). Finally evidence codes are added to the final result (`evcodes = TRUE`). The functional enrichment analysis was performed only against the `GO:BP` functional database by providing the option `sources = "GO:BP"`.
+
+<br>
+
+It was tested functional enrichment for all clusters, with the exception of cluster 8, because it lacks differential gene expression data. It was given individually a list of up- (avg_log2FC > 0) or downregulated (avg_log2FC < 0) genes ranked (from the most significant to the lowest) by adjusted *p*-values (only genes with an adjusted *p*-value < 0.05). 
+
+The result of this analysis is a plot and a table for each up- and down-regulated gene list from each cluster pairwise comparison across Cre3 *vs* Lox2, that shows the functional enrichment based on the -log10 of the adjusted *p*-value across different functional databases (see above). Only significant functions are reported. The table contains the following columns/information (the information below was copied entirely from the original vignette [here](https://cran.r-project.org/web/packages/gprofiler2/vignettes/gprofiler2.html#gene-list-functional-enrichment-analysis-with-gost)): 
+
+<br>
+
+   + **query**: the name of the input query which by default is the order of query with the prefix "query_". This can be changed by using a named list input.
+   
+   + **significant**: indicator for statistically significant results
+   
+   + **p_value**: hypergeometric p-value after correction for multiple testing
+   
+   + **term_size**: number of genes that are annotated to the term
+    
+   + **query_size**: number of genes that were included in the query. This might be different from the size of the original list if:
+   
+      + any genes were mapped to multiple Ensembl gene IDs
+      
+      + any genes failed to be mapped to Ensembl gene IDs
+      
+      + the parameter ordered_query = TRUE and the optimal cutoff for the term was found before the end of the query
+        
+      + the domain_scope was set to "annotated" or "custom"
+    
+   + **intersection_size**: the number of genes in the input query that are annotated to the corresponding term
+    
+   + **precision**: the proportion of genes in the input list that are annotated to the function (defined as intersection_size/query_size)
+    
+   + **recall**: the proportion of functionally annotated genes that the query recovers (defined as intersection_size/term_size)
+    
+   + **term_id**: unique term identifier (e.g GO:0005005)
+   
+   + **source**: the abbreviation of the data source for the term (e.g. GO:BP)
+   
+   + **term_name**: the short name of the function
+   
+   + **effective_domain_size**: the total number of genes "in the universe" used for the hypergeometric test
+   
+   + **source_order**: numeric order for the term within its data source (this is important for drawing the results)
+   
+   + **parents**: list of term IDs that are hierarchically directly above the term. For non-hierarchical data sources this points to an artificial root node.
+
+<br>
+
+In the bubble plots represented below, functions that have a -log10(adjusted *p*-value)>16 will be capped; *i.e.*, they will appear close to the vertical dashed black line. All these results reported below were run at 09/06/2021 using the archived version of the `gprofiler2` server - Ensembl 102, Ensembl Genomes 49 (database built on 2020-12-15): [https://biit.cs.ut.ee/gprofiler_archive3/e102_eg49_p15/gost](https://biit.cs.ut.ee/gprofiler_archive3/e102_eg49_p15/gost). 
+
+```{r reg lists}
+
+## Get up and down gene lists and parse them
+
+reg_gene_list <- list()
+for ( clt in names(dge) ) { # select dge by cluster and retrieve name
+  sub_df <- dge[[clt]]
+  #sub_df[,"Geneid"] <- rownames(sub_df)
+  gene_ids_up <- sub_df %>% 
+    filter(p_val_adj < 0.05 & avg_log2FC > 0) %>% 
+    arrange(p_val_adj) %>% 
+    pull(Geneid)
+  gene_ids_down <- sub_df %>% 
+    filter(p_val_adj < 0.05 & avg_log2FC < 0) %>% 
+    arrange(p_val_adj) %>% 
+    pull(Geneid)  
+  reg_gene_list[[clt]] <- list()
+  reg_gene_list[[clt]][["up"]] <- gsub(pattern = "PCHAS-", replacement = "PCHAS_", x = gene_ids_up)
+  reg_gene_list[[clt]][["down"]] <- gsub(pattern = "PCHAS-", replacement = "PCHAS_", x = gene_ids_down)
+}
+
+# create folders.
+r_object_folder <- "../results/func_enrich_plots_09_06_21/R_objects"
+if ( ! dir.exists(r_object_folder) ) dir.create(r_object_folder, recursive = TRUE)
+func_enrich_folder <- "../results/func_enrich_plots_09_06_21/tables/functional_enrichment"
+if ( ! dir.exists(func_enrich_folder) ) dir.create(func_enrich_folder, recursive = TRUE)
+
+```
+
+```{r func enrich, echo=TRUE, eval=FALSE}
+
+### Functional enrichment of DEG 
+
+## Run gprofiler2
+func_enrich <- list()
+set_base_url("https://biit.cs.ut.ee/gprofiler_archive3/e102_eg49_p15")
+for ( clt in names(reg_gene_list) ){ # loop over list and do functional enrichment
+  #print(get_base_url())
+  func_enrich[[clt]] <- list()
+  set.seed(1024)
+  func_enrich[[clt]][["up"]] <- gost(query = reg_gene_list[[clt]][["up"]], 
+                                     organism = "pchabaudi", ordered_query = TRUE, 
+                                     multi_query = FALSE, significant = TRUE, exclude_iea = FALSE, 
+                                     measure_underrepresentation = FALSE, evcodes = TRUE, 
+                                     user_threshold = 0.05, correction_method = "g_SCS", 
+                                     domain_scope = "annotated", custom_bg = NULL, 
+                                     numeric_ns = "", sources = "GO:BP")
+  if ( ! is.null(func_enrich[[clt]][["up"]]$result) ) {
+    sub_df_up <- func_enrich[[clt]][["up"]]$result %>% 
+    apply(X = ., MARGIN = 2, FUN =  function(x) as.character(x)) 
+    write.table(x = sub_df_up, 
+                file = paste(func_enrich_folder, paste0(clt, "_up_functional_enrichment_table.tsv"), 
+                             sep = "/"), 
+                quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
+  }
+  set.seed(1024)
+  func_enrich[[clt]][["down"]] <- gost(query = reg_gene_list[[clt]][["down"]], 
+                                       organism = "pchabaudi", ordered_query = TRUE, 
+                                       multi_query = FALSE, significant = TRUE, exclude_iea = FALSE, 
+                                       measure_underrepresentation = FALSE, evcodes = TRUE, 
+                                       user_threshold = 0.05, correction_method = "g_SCS", 
+                                       domain_scope = "annotated", custom_bg = NULL, 
+                                       numeric_ns = "", sources = "GO:BP")
+  if ( ! is.null(func_enrich[[clt]][["down"]]$result) ) {
+    sub_df_down <- func_enrich[[clt]][["down"]]$result %>% 
+    apply(X = ., MARGIN = 2, FUN =  function(x) as.character(x)) 
+    write.table(x = sub_df_down, 
+                file = paste(func_enrich_folder, paste0(clt, "_down_functional_enrichment_table.tsv"), 
+                             sep = "/"), 
+                quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
+  }
+}
+
+# Create R object
+saveRDS(object = func_enrich, file = paste(r_object_folder, "func_enrich.rds", sep = "/"))
+
+```
+
+```{r import func enrich}
+
+# Import functional enrichment object to avoid to have to run the API app
+func_enrich <- readRDS(file = paste(r_object_folder, "func_enrich.rds", sep = "/"))
+
+```
+
+<br>
+
+Among the clusters tested, it was only found significant functional enrichment pathways for cluster 3 (down), 4 (up) and 7 (up). 
+```{r func enrich - barplots}
+
+## Functional enrichments - barplots
+
+# Create folder to save results
+func_enrich_barplots_folder <- "../results/func_enrich_plots_09_06_21/plots/func_enrich_barplots"
+if ( ! dir.exists(func_enrich_barplots_folder) ) dir.create(func_enrich_barplots_folder, recursive = TRUE)
+
+# Plot and save data
+func_enrich_list <- list()
+for ( clt in names(func_enrich) ) { # loop over cluster
+  if ( ! is.null(names(func_enrich[[clt]])) ) { # if cluster is not NULL
+    func_enrich_list[[clt]] <- list()
+    for ( reg in names(func_enrich[[clt]]) ) { # loop over regulation: 'up' and 'down'
+      if ( reg == "up" ) {
+        color <- "#E64B35FF"
+      } else {
+        color <- "#4DBBD5FF"
+      }
+      # Plot barplot of functional enrichment 
+      func_enrich_list[[clt]][[reg]] <- func_enrich[[clt]][[reg]]$result %>% 
+        arrange(source, p_value) %>%
+        mutate(term_name = factor(term_name, levels = rev(unique(term_name)))) %>%
+        ggplot(data = ., mapping = aes(x = term_name, y = -log10(p_value))) + #, fill = source)) + 
+        geom_bar(stat = "identity", fill = color) + 
+        #ggsci::scale_fill_npg(name = "Source") +
+        #facet_grid( source ~ . , scales = "free_y", space = "free") +
+        coord_flip() + 
+        theme_bw() + 
+        ylab("-log10 (adjusted p-value)") + 
+        xlab("Term name") + 
+        theme(axis.text = element_text(size = 10, color = "black"))
+      # save
+      ggsave(filename = paste(func_enrich_barplots_folder, paste0(clt, "_", reg, "_func_enrich_barplot.pdf"), sep = "/"), 
+             plot = func_enrich_list[[clt]][[reg]], width = 6, height = 4)
+    }
+  }
+}
+
+```
+
+<br>
+
+<br>
+
+   + **Cluster 3 (down)**
+   
+<br>
+
+```{r}
+print(func_enrich_list$clt_3$down)
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest plot
+downloadthis::download_file(
+  path = paste(func_enrich_barplots_folder, "clt_3_down_func_enrich_barplot.pdf", sep = "/"),
+  output_name = "clt_3_down_func_enrich_barplot.pdf",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+   + **Cluster 4 (up)**
+   
+<br>
+
+```{r}
+print(func_enrich_list$clt_4$up)
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest plot
+downloadthis::download_file(
+  path = paste(func_enrich_barplots_folder, "clt_4_up_func_enrich_barplot.pdf", sep = "/"),
+  output_name = "clt_4_up_func_enrich_barplot.pdf",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>   
+   
+   
+   + **Cluster 7 (up)**
+
+<br>
+
+```{r}
+print(func_enrich_list$clt_7$up)
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest plot
+downloadthis::download_file(
+  path = paste(func_enrich_barplots_folder, "clt_7_up_func_enrich_barplot.pdf", sep = "/"),
+  output_name = "clt_7_up_func_enrich_barplot.pdf",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+### DGE: Cre3 vs Lox2 (heatmaps)
+
+<br>
+
+A gene was considered differentially expressed (and plotted) if it has an absolute log2FC>0 and an adjusted p-value<0.05. It was used the R package `ComplexHeatmap` (v.`r packageVersion("ComplexHeatmap")`) [@complexheatmap]. The same color gradient scale ranging from -4 to 4 was giving to all the heatmaps in order to make them comparable. For the heatmaps with more genes differentially expressed, only the top 10 up- and downregulated genes were labeled.  
+
+<br>
+
+   + **DGE heatmap: Cre3 vs Lox2 - cluster 0**
+
+```{r dge - heatmaps - clt_0, fig.width=3, fig.height=6}
+
+# path to save plots
+dge_folder <- "../results/func_enrich_plots_09_06_21/plots/dge"
+if ( ! dir.exists(dge_folder) ) dir.create(dge_folder)
+
+## DGE - heatmaps - clt 0
+
+# data
+cluster <- "clt_0"
+sub_df <- dge[[cluster]] %>% 
+  filter(p_val_adj<0.05 & abs(avg_log2FC)>0) %>% 
+  arrange(desc(avg_log2FC))
+row.names(sub_df) <- sub_df$Geneid
+sub_df <- sub_df[,"avg_log2FC", drop = FALSE]
+row_annot <- rowAnnotation(foo = anno_mark(at = c(1:2,45:54), 
+                                           labels = row.names(sub_df)[c(1:2,45:54)], 
+                                           labels_gp = gpar(fontsize = 8.5)))
+col_fun <- circlize::colorRamp2(c(-4, 0, 4), c("blue", "white", "red"))
+
+# save
+set.seed(1024)
+heat_clt0 <- Heatmap(matrix = as.matrix(sub_df), name = "Average\nlog2FC", 
+                     cluster_columns = FALSE, cluster_rows = FALSE, 
+                     show_column_names = FALSE, col = col_fun, 
+                     show_row_names = FALSE,
+                     right_annotation = row_annot)
+set.seed(1024)
+pdf(file = paste(dge_folder, paste0(cluster, "_dge_heatmap.pdf"), sep = "/"), 
+    width = 3, height = 0.1 * nrow(sub_df))
+print(heat_clt0)
+dev.off()
+
+# print
+set.seed(1024)
+print(heat_clt0)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest plot
+downloadthis::download_file(
+  path = paste(dge_folder, paste0(cluster, "_dge_heatmap.pdf"), sep = "/"),
+  output_name = paste0(cluster, "_dge_heatmap.pdf"),
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+   + **DGE heatmap: Cre3 vs Lox2 - cluster 1**
+
+```{r dge - heatmaps - clt_1, fig.width=3, fig.height=6}
+
+## DGE - heatmaps - clt 1
+
+# data
+cluster <- "clt_1"
+sub_df <- dge[[cluster]] %>% 
+  filter(p_val_adj<0.05 & abs(avg_log2FC)>0) %>% 
+  arrange(desc(avg_log2FC))
+row.names(sub_df) <- sub_df$Geneid
+sub_df <- sub_df[,"avg_log2FC", drop = FALSE]
+row_annot <- rowAnnotation(foo = anno_mark(at = c(1:10,44:53), 
+                                           labels = row.names(sub_df)[c(1:10,44:53)], 
+                                           labels_gp = gpar(fontsize = 8.5)))
+col_fun <- circlize::colorRamp2(c(-4, 0, 4), c("blue", "white", "red"))
+
+# save
+set.seed(1024)
+heat_clt1 <- Heatmap(matrix = as.matrix(sub_df), name = "Average\nlog2FC", 
+                     cluster_columns = FALSE, cluster_rows = FALSE, 
+                     show_column_names = FALSE, col = col_fun, 
+                     show_row_names = FALSE,
+                     right_annotation = row_annot)
+set.seed(1024)
+pdf(file = paste(dge_folder, paste0(cluster, "_dge_heatmap.pdf"), sep = "/"), 
+    width = 3, height = 0.1 * nrow(sub_df))
+print(heat_clt1)
+dev.off()
+
+# print
+set.seed(1024)
+print(heat_clt1)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest plot
+downloadthis::download_file(
+  path = paste(dge_folder, paste0(cluster, "_dge_heatmap.pdf"), sep = "/"),
+  output_name = paste0(cluster, "_dge_heatmap.pdf"),
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+   + **DGE heatmap: Cre3 vs Lox2 - cluster 2**
+
+```{r dge - heatmaps - clt_2, fig.width=3, fig.height=6}
+
+## DGE - heatmaps - clt 2
+
+# data
+cluster <- "clt_2"
+sub_df <- dge[[cluster]] %>% 
+  filter(p_val_adj<0.05 & abs(avg_log2FC)>0) %>% 
+  arrange(desc(avg_log2FC))
+row.names(sub_df) <- sub_df$Geneid
+sub_df <- sub_df[,"avg_log2FC", drop = FALSE]
+row_annot <- rowAnnotation(foo = anno_mark(at = c(1:9,55:64), 
+                                           labels = row.names(sub_df)[c(1:9,55:64)], 
+                                           labels_gp = gpar(fontsize = 8.5)))
+col_fun <- circlize::colorRamp2(c(-4, 0, 4), c("blue", "white", "red"))
+
+# save
+set.seed(1024)
+heat_clt2 <- Heatmap(matrix = as.matrix(sub_df), name = "Average\nlog2FC", 
+                     cluster_columns = FALSE, cluster_rows = FALSE, 
+                     show_column_names = FALSE, col = col_fun, 
+                     show_row_names = FALSE,
+                     right_annotation = row_annot)
+set.seed(1024)
+pdf(file = paste(dge_folder, paste0(cluster, "_dge_heatmap.pdf"), sep = "/"), 
+    width = 3, height = 0.1 * nrow(sub_df))
+print(heat_clt2)
+dev.off()
+
+# print
+set.seed(1024)
+print(heat_clt2)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest plot
+downloadthis::download_file(
+  path = paste(dge_folder, paste0(cluster, "_dge_heatmap.pdf"), sep = "/"),
+  output_name = paste0(cluster, "_dge_heatmap.pdf"),
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+   + **DGE heatmap: Cre3 vs Lox2 - cluster 3**
+
+```{r dge - heatmaps - clt_3, fig.width=3, fig.height=6}
+
+## DGE - heatmaps - clt 3
+
+# data
+cluster <- "clt_3"
+sub_df <- dge[[cluster]] %>% 
+  filter(p_val_adj<0.05 & abs(avg_log2FC)>0) %>% 
+  arrange(desc(avg_log2FC))
+row.names(sub_df) <- sub_df$Geneid
+sub_df <- sub_df[,"avg_log2FC", drop = FALSE]
+row_annot <- rowAnnotation(foo = anno_mark(at = c(1:10,196:205), 
+                                           labels = row.names(sub_df)[c(1:10,196:205)], 
+                                           labels_gp = gpar(fontsize = 8.5)))
+col_fun <- circlize::colorRamp2(c(-4, 0, 4), c("blue", "white", "red"))
+
+# save
+set.seed(1024)
+heat_clt3 <- Heatmap(matrix = as.matrix(sub_df), name = "Average\nlog2FC", 
+                     cluster_columns = FALSE, cluster_rows = FALSE, 
+                     show_column_names = FALSE, col = col_fun, 
+                     show_row_names = FALSE,
+                     right_annotation = row_annot)
+set.seed(1024)
+pdf(file = paste(dge_folder, paste0(cluster, "_dge_heatmap.pdf"), sep = "/"), 
+    width = 3, height = 0.1 * nrow(sub_df))
+print(heat_clt3)
+dev.off()
+
+# print
+set.seed(1024)
+print(heat_clt3)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest plot
+downloadthis::download_file(
+  path = paste(dge_folder, paste0(cluster, "_dge_heatmap.pdf"), sep = "/"),
+  output_name = paste0(cluster, "_dge_heatmap.pdf"),
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+   + **DGE heatmap: Cre3 vs Lox2 - cluster 4**
+
+```{r dge - heatmaps - clt_4, fig.width=3, fig.height=6}
+
+## DGE - heatmaps - clt 4
+
+# data
+cluster <- "clt_4"
+sub_df <- dge[[cluster]] %>% 
+  filter(p_val_adj<0.05 & abs(avg_log2FC)>0) %>% 
+  arrange(desc(avg_log2FC))
+row.names(sub_df) <- sub_df$Geneid
+sub_df <- sub_df[,"avg_log2FC", drop = FALSE]
+row_annot <- rowAnnotation(foo = anno_mark(at = c(1:10,84:93), 
+                                           labels = row.names(sub_df)[c(1:10,84:93)], 
+                                           labels_gp = gpar(fontsize = 8.5)))
+col_fun <- circlize::colorRamp2(c(-4, 0, 4), c("blue", "white", "red"))
+
+# save
+set.seed(1024)
+heat_clt4 <- Heatmap(matrix = as.matrix(sub_df), name = "Average\nlog2FC", 
+                     cluster_columns = FALSE, cluster_rows = FALSE, 
+                     show_column_names = FALSE, col = col_fun, 
+                     show_row_names = FALSE,
+                     right_annotation = row_annot)
+set.seed(1024)
+pdf(file = paste(dge_folder, paste0(cluster, "_dge_heatmap.pdf"), sep = "/"), 
+    width = 3, height = 0.1 * nrow(sub_df))
+print(heat_clt4)
+dev.off()
+
+# print
+set.seed(1024)
+print(heat_clt4)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest plot
+downloadthis::download_file(
+  path = paste(dge_folder, paste0(cluster, "_dge_heatmap.pdf"), sep = "/"),
+  output_name = paste0(cluster, "_dge_heatmap.pdf"),
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+   + **DGE heatmap: Cre3 vs Lox2 - cluster 5**
+
+```{r dge - heatmaps - clt_5, fig.width=3, fig.height=6}
+
+## DGE - heatmaps - clt 5
+
+# data
+cluster <- "clt_5"
+sub_df <- dge[[cluster]] %>% 
+  filter(p_val_adj<0.05 & abs(avg_log2FC)>0) %>% 
+  arrange(desc(avg_log2FC))
+row.names(sub_df) <- sub_df$Geneid
+sub_df <- sub_df[,"avg_log2FC", drop = FALSE]
+# row_annot <- rowAnnotation(foo = anno_mark(at = c(1:6,9:18), 
+#                                            labels = row.names(sub_df)[c(1:6,9:18)], 
+#                                            labels_gp = gpar(fontsize = 8.5)))
+col_fun <- circlize::colorRamp2(c(-4, 0, 4), c("blue", "white", "red"))
+
+# save
+set.seed(1024)
+heat_clt5 <- Heatmap(matrix = as.matrix(sub_df), name = "Average\nlog2FC", 
+                     cluster_columns = FALSE, cluster_rows = FALSE, 
+                     show_column_names = FALSE, col = col_fun, 
+                     show_row_names = TRUE, row_names_gp = gpar(fontsize = 6.5))#,
+                     #right_annotation = row_annot)
+set.seed(1024)
+pdf(file = paste(dge_folder, paste0(cluster, "_dge_heatmap.pdf"), sep = "/"), 
+    width = 3, height = 0.1 * nrow(sub_df))
+print(heat_clt5)
+dev.off()
+
+# print
+set.seed(1024)
+print(heat_clt5)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest plot
+downloadthis::download_file(
+  path = paste(dge_folder, paste0(cluster, "_dge_heatmap.pdf"), sep = "/"),
+  output_name = paste0(cluster, "_dge_heatmap.pdf"),
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+   + **DGE heatmap: Cre3 vs Lox2 - cluster 6**
+
+```{r dge - heatmaps - clt_6, fig.width=3, fig.height=6}
+
+## DGE - heatmaps - clt 6
+
+# data
+cluster <- "clt_6"
+sub_df <- dge[[cluster]] %>% 
+  filter(p_val_adj<0.05 & abs(avg_log2FC)>0) %>% 
+  arrange(desc(avg_log2FC))
+row.names(sub_df) <- sub_df$Geneid
+sub_df <- sub_df[,"avg_log2FC", drop = FALSE]
+# row_annot <- rowAnnotation(foo = anno_mark(at = c(1:6,9:18), 
+#                                            labels = row.names(sub_df)[c(1:6,9:18)], 
+#                                            labels_gp = gpar(fontsize = 8.5)))
+col_fun <- circlize::colorRamp2(c(-4, 0, 4), c("blue", "white", "red"))
+
+# save
+set.seed(1024)
+heat_clt6 <- Heatmap(matrix = as.matrix(sub_df), name = "Average\nlog2FC", 
+                     cluster_columns = FALSE, cluster_rows = FALSE, 
+                     show_column_names = FALSE, col = col_fun, 
+                     show_row_names = TRUE, row_names_gp = gpar(fontsize = 6.5))#,
+                     #right_annotation = row_annot)
+set.seed(1024)
+pdf(file = paste(dge_folder, paste0(cluster, "_dge_heatmap.pdf"), sep = "/"), 
+    width = 3, height = 0.1 * nrow(sub_df))
+print(heat_clt6)
+dev.off()
+
+# print
+set.seed(1024)
+print(heat_clt6)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest plot
+downloadthis::download_file(
+  path = paste(dge_folder, paste0(cluster, "_dge_heatmap.pdf"), sep = "/"),
+  output_name = paste0(cluster, "_dge_heatmap.pdf"),
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+   + **DGE heatmap: Cre3 vs Lox2 - cluster 7**
+
+```{r dge - heatmaps - clt_7, fig.width=3, fig.height=6}
+
+## DGE - heatmaps - clt 7
+
+# data
+cluster <- "clt_7"
+sub_df <- dge[[cluster]] %>% 
+  filter(p_val_adj<0.05 & abs(avg_log2FC)>0) %>% 
+  arrange(desc(avg_log2FC))
+row.names(sub_df) <- sub_df$Geneid
+sub_df <- sub_df[,"avg_log2FC", drop = FALSE]
+row_annot <- rowAnnotation(foo = anno_mark(at = c(1:10,48:57),
+                                           labels = row.names(sub_df)[c(1:10,48:57)],
+                                           labels_gp = gpar(fontsize = 8.5)))
+col_fun <- circlize::colorRamp2(c(-4, 0, 4), c("blue", "white", "red"))
+
+# save
+set.seed(1024)
+heat_clt7 <- Heatmap(matrix = as.matrix(sub_df), name = "Average\nlog2FC", 
+                     cluster_columns = FALSE, cluster_rows = FALSE, 
+                     show_column_names = FALSE, col = col_fun, 
+                     show_row_names = FALSE, 
+                     right_annotation = row_annot)
+set.seed(1024)
+pdf(file = paste(dge_folder, paste0(cluster, "_dge_heatmap.pdf"), sep = "/"), 
+    width = 3, height = 0.1 * nrow(sub_df))
+print(heat_clt7)
+dev.off()
+
+# print
+set.seed(1024)
+print(heat_clt7)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest plot
+downloadthis::download_file(
+  path = paste(dge_folder, paste0(cluster, "_dge_heatmap.pdf"), sep = "/"),
+  output_name = paste0(cluster, "_dge_heatmap.pdf"),
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+### Plot markers over overlay UMAPs
+
+<br>
+
+To plot markers it was used the integrated `Seurat` object with the Cre3 and Lox2 samples. The assay used was `RNA` and the slot `data` with the counts normalized with the `LogNormalize` method ([read more](https://satijalab.org/seurat/reference/normalizedata)). 
+
+The individual plots of the new markers highlighted through the integrated UMAPs can be found at: `results/func_enrich_plots_09_06_21/plots/markers_all`.  
+
+```{r plot new markers}
+
+## Plot new markers
+
+# folder to save plots
+plot_mkr_folder <- "../results/func_enrich_plots_09_06_21/plots/markers_all"
+if ( ! dir.exists(plot_mkr_folder) ) dir.create(plot_mkr_folder)
+
+# check assay 
+stopifnot(DefaultAssay(seu) == "RNA")
+marker_plots <- list()
+for ( mkr in markers_all$Genes ) { # loop over marker genes within a cluster
+  stopifnot( mkr %in% row.names(seu) ) # stop if gene does not exist in the Seurat obj
+  marker_plots[[mkr]] <- FeaturePlot(object = seu, features = mkr, 
+                                     slot = "data", reduction = "umap", 
+                                     pt.size = 0.001)
+  ggsave(filename = paste(plot_mkr_folder, paste0(mkr, "_gene_UMAP.pdf"), sep = "/"), 
+         plot = marker_plots[[mkr]], height = 5, width = 5)
+}
+
+```
+
+```{r fig.width=10, fig.height=9}
+
+cowplot::plot_grid(plotlist = marker_plots[1:9], ncol = 3)
+
+```
+
+```{r fig.width=10, fig.height=9}
+
+cowplot::plot_grid(plotlist = marker_plots[10:18], ncol = 3)
+
+```
+
+```{r fig.width=10, fig.height=9}
+
+cowplot::plot_grid(plotlist = marker_plots[19:27], ncol = 3)
+
+```
+
+<br>
+
+<br>
+
+### Plot markers for cluster 8 by Lox2 UMAP
+
+<br>
+
+To plot cluster 8 markers it was used the integrated `Seurat` object with the Cre3 sample only. The assay used was `RNA` and the slot `data` with the counts normalized with the `LogNormalize` method ([read more](https://satijalab.org/seurat/reference/normalizedata)). 
+
+The individual plots of the new markers highlighted through the integrated UMAPs can be found at: `results/func_enrich_plots_09_06_21/plots/markers_clt8`.  
+
+```{r mkr clt 8 lox2, fig.width=10, fig.height=6}
+
+## Plot markers for cluster 8 by Lox2 UMAP
+
+# folder to save plots
+plot_mkr_clt8_folder <- "../results/func_enrich_plots_09_06_21/plots/markers_clt8"
+if ( ! dir.exists(plot_mkr_clt8_folder) ) dir.create(plot_mkr_clt8_folder)
+
+# get Seurat Lox2 obj
+cre3 <- SplitObject(object = seu, split.by = "orig.ident")
+cre3 <- cre3$Cre3
+
+# save plots
+marker_plot_clt8 <- list()
+for ( mkr in markers_clt8 ) {
+  stopifnot( mkr %in% row.names(cre3) ) # stop if gene does not exist in the Seurat obj
+  marker_plot_clt8[[mkr]] <- FeaturePlot(object = cre3, features = mkr, 
+                                         slot = "data", reduction = "umap", 
+                                         pt.size = 0.001)
+  ggsave(filename = paste(plot_mkr_clt8_folder, paste0(mkr, "_gene_UMAP.pdf"), sep = "/"), 
+         plot = marker_plot_clt8[[mkr]], height = 5, width = 5)
+  
+}
+
+# plot all
+cowplot::plot_grid(plotlist = marker_plot_clt8, ncol = 3)
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+### Orthology conversion: P. chabaudi *vs* P. falciparum 3D7
+
+<br>
+
+Orthology search was done with the `gprofiler2` R package (v.`r packageVersion("gprofiler2")`) [@gprofiler2], an interface to the [g:Profiler](https://biit.cs.ut.ee/gprofiler/gost) web browser tool. The function `gorth()` was applied in order get orthologous genes of *Plasmodium chabaudi chabaudi* (v.PCHAS01; `source_organism = "pchabaudi"`) against *Plasmodium falciparum 3D7* (v.ASM276v2; `target_organism = "pfalciparum"`). The query gene list of *P. chabaudi* genes consisted in all the genes that are expressed in the `Seurat` integrated object (n=`r length(row.names(seu))`). Genes without correspondence were filtered out (`filter_na = TRUE`). One `*P. chabaudi` may have more than one orthologous gene (`mthreshold = Inf`). This conversion was done at 09/06/2021 using the archived version of the `gprofiler2` server - Ensembl 102, Ensembl Genomes 49 (database built on 2020-12-15): [https://biit.cs.ut.ee/gprofiler_archive3/e102_eg49_p15/gost](https://biit.cs.ut.ee/gprofiler_archive3/e102_eg49_p15/gost).    
+
+```{r orthology conversion}
+
+## Convert orthologous genes between P. chabaudi *vs* P. falciparum 3D7
+
+genes_exp <- row.names(seu)
+genes_exp <- gsub(pattern = "PCHAS-", replacement = "PCHAS_", x = genes_exp)
+set.seed(1024)
+set_base_url("https://biit.cs.ut.ee/gprofiler_archive3/e102_eg49_p15")
+orth_pchabaudi_genes <- gorth(query = genes_exp, source_organism = "pchabaudi", target_organism = "pfalciparum")
+write.table(file = "../results/func_enrich_plots_09_06_21/tables/orthologous_genes_Pchabaudi_vs_Pfalciparum3D7.tsv", 
+            x = orth_pchabaudi_genes, sep = "\t", row.names = FALSE, quote = FALSE)
+
+```
+
+Among the *P. chabaudi* `r length(row.names(seu))` genes queried, it was only found `r nrow(orth_pchabaudi_genes)` hits presented below. 
+
+<br>
+
+```{r echo=FALSE}
+datatable(data = orth_pchabaudi_genes, extensions = "Buttons", 
+          caption = "Table with the list of orthologous genes between Plasmodium chabaudi chabaudi and Plasmodium falciparum 3D7 obtained with gprofiler2.", 
+          options = list(dom = "Blfrtip", buttons = c('csv', 'excel')))     
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest table
+downloadthis::download_file(
+  path = "../results/func_enrich_plots_09_06_21/tables/orthologous_genes_Pchabaudi_vs_Pfalciparum3D7.tsv",
+  output_name = "orthologous_genes_Pchabaudi_vs_Pfalciparum3D7.tsv",
+  button_label = "Download table",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+    
+## Deliver
+
+Folders inside the project folder:
+
+   + results: folder that contains all the results obtained in this analysis;
+
+   + report: folder that contains the report and code used herein;
+
+   + data: folder that contains the data used herein;
+   
+   + scripts: folder that contains the scripts used herein;
+
+   + info: folder that contains some useful information (*i.e.*, papers, etc) used herein;
+  
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+#### R packages used and respective versions
+
+```{r References, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+## R packages and versions used in these analyses
+
+sessionInfo()
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+<br>
+<br>
+
+
+## References
+
+\printbibliography

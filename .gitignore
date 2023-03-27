@@ -1,0 +1,16 @@
+*
+!*/
+!README.md
+!.gitignore
+!/report/01_2012_miguel_elisa_cre3_processing.Rmd
+!/report/02_2012_miguel_elisa_lox2_processing.Rmd
+!/report/07_2012_miguel_elisa_cre3_lox2_integration_w_new_plots.Rmd
+!/report/09_2012_miguel_elisa_RNA_velocity_part1.Rmd
+!/report/09_2012_miguel_elisa_RNA_velocity_part2.ipynb
+!/report/10_2012_miguel_elisa_plot_markers.Rmd
+!/report/11_2012_miguel_elisa_func_enrich_plot_DEG_markers.Rmd
+!/report/bibliography.bib
+!/scripts/multi_funs.R
+!/scripts/velocyto_script.sh
+!/scripts/export_dge_plotted_heatmap.R
+!/scripts/export_RNA_counts_and_norm_data_script.R

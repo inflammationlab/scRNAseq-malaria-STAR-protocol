@@ -1,0 +1,1897 @@
+---
+title: 'Report: Integration Cre3 and Lox2 scRNA samples'
+author: "Jingtao Lilue and António Sousa - UBI-IGC (e-mail: <agsousa@igc.gulbenkian.pt>)"
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output: 
+  html_document:
+    toc: true 
+    toc_float: true
+    theme: united
+    code_folding: hide
+bibliography: bibliography.bib
+---
+
+<br>
+
+---
+
+## Request
+
+<br>
+
+>This report was originally run at 23/04/2021. It was re-run as a separated report and the results saved in a different folder in order to include extra figures. 
+
+<br>
+
+This report includes a description and the results of the analyses requested by Elisa Jentho at 27/05/2021: 
+
+   1. Integration of Cre3 and Lox2 of *Plasmodium chabaudi* scRNA-seq samples with `Seurat`.
+   
+   2. Differential gene expression for each cluster across samples (represented through heatmaps). 
+   
+   3. Functional enrichment of the differentially expressed genes (represented through barplots). 
+
+<br>
+
+The figures and tables displayed through the report can be download in *pdf* and *tab-separated* format by clicking on the bottom left **Download plot** and **Download table** button that appears after each plot and table, respectively. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	fig.align = "center",
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+```{r klippy, echo=FALSE}
+klippy::klippy(position = c('top', 'right'))
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## About this report
+
+<br>
+
+The R version used was `r paste0(version$major, ".", version$minor)` [@r]. This report was built with the `rmarkdown` R package (v.`r packageVersion("rmarkdown")`) [@rmarkdown_1; @rmarkdown_2; @rmarkdown_3]. See the full list of packages and versions used at the end of this report - **R packages used and respective versions**.
+
+The integration of the 10x Lox2 and Cre3 samples, the discover of conserved markers as well as differentially expressed genes was performed with the `Seurat` R package (v.`r packageVersion("Seurat")`) [@seurat_1; @seurat_2; @seurat_3; @seurat_4].
+
+```{r seed}
+
+## Set seed 
+set.seed(seed = 1024) # to keep reproducibility
+
+```
+
+```{r import packages, message=FALSE, warning=FALSE}
+
+## Import packages 
+
+library("dplyr", quietly = TRUE)
+library("DT", quietly = TRUE) # package to print nice in the html report 
+library("Seurat", quietly = TRUE)
+library("gplots", quietly = TRUE)
+library("Matrix", quietly = TRUE)
+library("ggplot2", quietly = TRUE)
+library("tidyr", quietly = TRUE)
+library("gprofiler2", quietly = TRUE)
+library("ComplexHeatmap", quietly = TRUE)
+source("../scripts/multi_funs.R")
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## Integration: Cre3 & Lox2 samples
+
+<br>
+
+### Import data
+
+<br>
+
+The R objects corresponding to the **Cre3** and **Lox2** 10x scRNA-seq samples processed independently before were imported in order to be integrated following the procedure described at: [https://satijalab.org/seurat/articles/integration_introduction.html](https://satijalab.org/seurat/articles/integration_introduction.html). For integration it was used the `Seurat` R package (v.`r packageVersion("Seurat")`) [@seurat_1; @seurat_2; @seurat_3; @seurat_4].
+
+```{r import seurat objs}
+
+## Import Seurat objects of Cre3 and Lox2 
+
+cre3_seu <- readRDS(file = "../results/cre3/R_objects/cre3_seu.rds")
+lox2_seu <- readRDS(file = "../results/lox2/R_objects/lox2_seu.rds")
+seu_list <- list(
+  "cre3" = cre3_seu,
+  "lox2" = lox2_seu
+  )
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+### Normalization
+
+<br>
+
+Both objects were normalized with `NormalizeData()` and variable features found with `FindVariableFeatures()` using the `vst` method (`selection.method = "vst"`) with 750 most variable features. Then, integrated features were selected with `SelectIntegrationFeatures()` 
+
+```{r norm & var feature selection}
+
+## Normalization and Feature selection independently for each data set
+
+params <- list(n_var_features = 750) # list of parameters to use throughout the analysis
+
+seu_list <- lapply(X = seu_list, FUN = function(x) { # apply norm & var
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = params$n_var_features)
+})
+
+# select features that are variable across both data sets
+
+params[["var_features"]] <- SelectIntegrationFeatures(object.list = seu_list)
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+### Integration, DR & clustering
+
+<br>
+
+Integration was performed by finding shared *anchors* across samples with `FindIntegrationAnchors()` using the integrated variable features found before and with `IntegrateData()`. Then, the integrated `Seurat` was re-scaled (`ScaleData()`), it was computed the PCA (`RunPCA()`) and UMAP (`RunUMAP()`) using the first 12 PCs and the method PCA. Clustering was performed with `FindNeighbors()`, using the PCA method and the first 12 PCs, and with `FindClusters()`, using a resolution of 0.39 (slightly higher than the resolution used independently for the Lox2 sample - 0.35 -, but the similar to the one used for the Cre3 sample - 0.4), which yielded 9 clusters.  
+
+```{r integration}
+
+## Find anchors, integrate, cluster, PCA and UMAP
+
+# find anchors
+params[["anchors"]] <- FindIntegrationAnchors(object.list = seu_list, 
+                                              anchor.features = params[["var_features"]])
+
+# integrate labels
+seu <- IntegrateData(anchorset = params[["anchors"]])
+
+# define default assay, assay integrated
+DefaultAssay(seu) <- "integrated"
+
+# cluster, PCA and UMAP
+params[["n_pcs"]] <- 12; params[["mth"]] <- "pca"; params[["res"]] <- 0.39;
+seu <- ScaleData(seu, verbose = FALSE)
+seu <- RunPCA(seu, npcs = params$n_pcs, verbose = FALSE)
+seu <- RunUMAP(seu, reduction = params$mth, dims = 1:params$n_pcs)
+seu <- FindNeighbors(seu, reduction = params$mth, dims = 1:params$n_pcs)
+seu <- FindClusters(seu, resolution = params$res)
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+### Viz: UMAP
+
+<br>
+
+Please find below the samples integrated and projected through a UMAP and identified by sample and cluster.
+
+```{r viz - umap - samp & clts, fig.width=10, fig.height=4.5}
+
+## Visualization - UMAP
+
+umap_plots[["int"]] <- umap_plots <- list()
+
+# plot them all
+umap_plots[["int"]][["samp"]] <- DimPlot(seu, reduction = "umap", group.by = "orig.ident")
+umap_plots[["int"]][["clts"]] <- DimPlot(seu, reduction = "umap", label = TRUE, repel = TRUE)
+umap_all_int <- cowplot::plot_grid(plotlist = list(umap_plots[["int"]][["samp"]], umap_plots[["int"]][["clts"]]),
+                                   ncol = 2)
+
+# save
+plot_folder <- "../results/int_28_05_21/plots"
+if( ! dir.exists(plot_folder) ) dir.create(plot_folder, recursive = TRUE)
+cowplot::save_plot(filename = paste(plot_folder, "integrated_sample_cluster_UMAP_plot.pdf", sep = "/"), 
+                   plot = umap_all_int, base_width = 8.5)
+
+# print
+print(umap_all_int)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plot_folder, "integrated_sample_cluster_UMAP_plot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+```{r viz - umap - samp & clts individual, fig.width=8, fig.height=4.5}
+
+## Visualization - UMAP (individual)
+
+# plot 
+seu@meta.data$orig.ident <- factor(seu@meta.data$orig.ident, levels = c("Lox2", "Cre3")) 
+umap_plots[["int"]][["samp_clts"]] <- DimPlot(seu, reduction = "umap", label = TRUE, split.by = "orig.ident")
+
+# save 
+cowplot::save_plot(filename = paste(plot_folder, "integrated_sample_cluster_individual_UMAP_plot.pdf", sep = "/"), 
+                   plot = umap_plots[["int"]][["samp_clts"]], base_width = 7)
+
+# print
+print(umap_plots[["int"]][["samp_clts"]])
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plot_folder, "integrated_sample_cluster_individual_UMAP_plot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## Cell populations: frequencies across clusters
+
+<br>
+
+Below it was retrieved the absolute number and percentage of each cell populations/cluster for each sample, and the results presented in two barplots and one table.  
+
+```{r cell pop - clts freq - abs}
+
+## Cell populations: frequencies across clusters
+
+# check if 'seurat_clusters' are with the right identity cluster
+stopifnot( all( as.character( seu@meta.data$seurat_clusters ) == as.character( seu@meta.data$integrated_snn_res.0.39 ) ) )
+stopifnot( all( as.character( Idents(seu) ) ==  as.character( seu@meta.data$seurat_clusters ) ) )
+
+# Abundance
+# Cre3
+cre3_clt_abund <- seu@meta.data %>% 
+  filter(orig.ident == "Cre3") %>% 
+  pull(seurat_clusters) %>% 
+  as.character(.) %>% 
+  table(.) %>% 
+  as.data.frame(.) %>% 
+  `colnames<-`(c("Clusters", "Abundance"))
+
+# Lox2
+lox2_clt_abund <- seu@meta.data %>% 
+  filter(orig.ident == "Lox2") %>% 
+  pull(seurat_clusters) %>% 
+  as.character(.) %>% 
+  table(.) %>% 
+  as.data.frame(.) %>% 
+  `colnames<-`(c("Clusters", "Abundance"))
+
+## Join/Parse information 
+stopifnot( all( levels(seu@meta.data$seurat_clusters) == as.character(cre3_clt_abund$Clusters) ) )
+stopifnot( all( as.character(cre3_clt_abund$Clusters) == as.character(lox2_clt_abund$Clusters) ) )
+cell_pop_df <- data.frame(
+  "Clusters" = levels(cre3_clt_abund$Clusters), 
+  "Cre3_abundance" = cre3_clt_abund$Abundance,
+  #"Cre3_percentage" = cre3_clt_abund$Abundance / sum(cre3_clt_abund$Abundance) * 100, 
+  "Lox2_abundance" = lox2_clt_abund$Abundance, 
+  #"Lox2_percentage" = lox2_clt_abund$Abundance / sum(lox2_clt_abund$Abundance) * 100, 
+  stringsAsFactors = FALSE
+)
+cell_pop_df <- cell_pop_df %>% pivot_longer(data = ., cols = ends_with("_abundance"), 
+                             names_to = "Sample", values_to = "Abundance") %>% 
+  mutate(Sample = gsub(pattern = "_abundance", replacement = "", x = Sample)) %>% 
+  group_by(Sample) %>% 
+  mutate("Percentage" = Abundance / sum(Abundance) * 100)
+
+## Plot
+# absolute abundance
+cell_pop_abundance_plot <- cell_pop_df %>% 
+  mutate(Clusters = factor(Clusters, levels = rev(unique(Clusters)))) %>%
+  ungroup() %>%
+  mutate(Sample = factor(Sample, levels = rev(unique(Sample)))) %>% 
+  ggplot(data = ., mapping = aes(x = Sample, y = Abundance, fill = Clusters)) + 
+  geom_bar(stat = "identity") + 
+  ggsci::scale_fill_jco(name = "Cluster") + 
+  ylab("No. of cells per cluster") +
+  theme_bw() + 
+  theme(axis.title = element_text(size = 12), 
+        axis.text = element_text(size = 12, color = "black"))
+
+# save 
+ggsave(filename = paste(plot_folder, "cell_pop_abundance_barplot.pdf", sep = "/"), 
+       plot = cell_pop_abundance_plot)
+
+# print
+print(cell_pop_abundance_plot)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plot_folder, "cell_pop_abundance_barplot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+```{r cell pop - clts freq - perc}
+
+## Plot
+# Percentage - abundance
+cell_pop_percentage_plot <- cell_pop_df %>% 
+  mutate(Clusters = factor(Clusters, levels = rev(unique(Clusters)))) %>%
+  ungroup() %>%
+  mutate(Sample = factor(Sample, levels = rev(unique(Sample)))) %>% 
+  ggplot(data = ., mapping = aes(x = Sample, y = Percentage, fill = Clusters)) + 
+  geom_bar(stat = "identity") + 
+  ggsci::scale_fill_jco(name = "Cluster") + 
+  ylab("Percentage of cells per cluster") +
+  theme_bw() + 
+  theme(axis.title = element_text(size = 12), 
+        axis.text = element_text(size = 12, color = "black"))
+
+# save 
+ggsave(filename = paste(plot_folder, "cell_pop_percentage_barplot.pdf", sep = "/"), 
+       plot = cell_pop_percentage_plot)
+
+# print
+print(cell_pop_percentage_plot)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plot_folder, "cell_pop_percentage_barplot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+Please find below the table used to plot the barplots above.
+
+<br>
+
+```{r echo=FALSE}
+datatable(data = cell_pop_df, extensions = "Buttons", 
+          caption = "Table of absolute abundance and percentage of cell clusters/populations across Cre3 and Lox2 samples.", 
+          options = list(dom = "Blfrtip", buttons = c('csv', 'excel')))     
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## Conserved markers
+
+<br>
+
+To find conserved markers across the two samples it was run `FindConservedMarkers()` on the original `RNA` assay for each independent cluster.
+
+```{r conserved markers}
+
+## Find conserved markers
+
+# create folder to save conserved markers
+conserved_markers_folder <- "../results/int_28_05_21/tables/conserved_markers"
+if ( ! dir.exists(conserved_markers_folder) ) dir.create(conserved_markers_folder, recursive = TRUE)
+
+# change default assay for DGE
+DefaultAssay(seu) <- "RNA" 
+
+# Run conserved markers
+conserved_markers <- list() # to save results into a list
+clts <- seu@meta.data$seurat_clusters %>% levels(.) # all the clts to loop over
+for ( clt in clts ) { # loop over the clts and get conserved markers 
+  clt_name <- paste0("clt_", clt) 
+  clt_no <- as.numeric(clt)
+  cell_no_lox2 <- seu@meta.data %>% 
+    filter(orig.ident == "Lox2" & seurat_clusters == clt) %>%
+    nrow(.)
+  cell_no_cre3 <- seu@meta.data %>% 
+    filter(orig.ident == "Cre3" & seurat_clusters == clt) %>%
+    nrow(.) 
+  if ( (cell_no_lox2 >= 3) & (cell_no_cre3 >= 3) ) {
+    set.seed(1024)
+    conserved_markers[[clt_name]] <- FindConservedMarkers(seu, ident.1 = clt_no, 
+                                                          grouping.var = "orig.ident", 
+                                                          verbose = FALSE)  
+    write.table(x = cbind("Gene_id" = rownames(conserved_markers[[clt_name]]), conserved_markers[[clt_name]]), 
+                file = paste(conserved_markers_folder, paste0(clt_name, "_conserved_markers.tsv"), sep = "/"), 
+                sep = "\t", row.names = FALSE, quote = FALSE)
+  }
+}
+
+## Join conserved markers into one table
+conserved_markers_tbl <- NULL
+for ( clt in names(conserved_markers) ) { # loop over clusters
+  sub_df <- conserved_markers[[clt]] 
+  col_names <- colnames(sub_df)
+  sub_df[,"Gene_id"] <- rownames(conserved_markers[[clt]])
+  sub_df[,"Cluster"] <- clt
+  col_order <- c("Cluster", "Gene_id", col_names)
+  sub_df <- sub_df[,col_order]
+  # check if colnames match to just rbind
+  if ( is.null(conserved_markers_tbl) ) {
+    conserved_markers_tbl <- sub_df 
+  } else {
+    stopifnot( all( colnames(conserved_markers_tbl) == col_order ) )
+    conserved_markers_tbl <- rbind( conserved_markers_tbl, sub_df ) 
+  }
+}
+
+```
+
+Please find below the conserved markers for each cluster across the two samples, with the exception of cluster 8 due to the lack of cells in the Lox2 sample (n=1). You can find the individual tables for each cluster in the folder `results/int/tables/conserved_markers`.
+
+<br>
+
+```{r echo=FALSE}
+datatable(data = conserved_markers_tbl, extensions = "Buttons", 
+          caption = "Table of conserved markers for each cluster across the two samples, Cre3 and Lox2, with the exception of cluster 8 due to the lack of cells in the Lox2 sample (n=1). It was not applied any filter to this table.", 
+          options = list(dom = "Blfrtip", buttons = c('csv', 'excel')))     
+```
+
+<br>
+
+<br>
+
+#### Conserved markers: Cre3 cluster 8
+
+<br>
+
+Since the cluster 8 appears only in sample Cre3, it was not possible to retrieve conserved markers for this clusters based on the sample comparison, though its possible to retrieve when cluster 8 is compared against all clusters for the sample Cre3 only. Therefore this approach was applied below by subsetting the main Seurat object to the sample Cre3 and determining the markers of cluster 8 against the others with the function `FindMarkers()` with its default parameters (`logfc.threshold = 0.25`; `test.use = "wilcox"`, `min.pct = 0.1`, `min.cells.group = 3`, `min.cells.feature = 3` - see a full list of parameters in the [documentation of the function](https://satijalab.org/seurat/reference/findmarkers)).
+
+```{r conserved markers - cre3 - clt 8}
+
+## Conserved markers: Cre3 cluster 8
+
+# Subset main obj to Cre3 sample
+cre3_int_seu <- subset(seu, subset = orig.ident == "Cre3")
+
+# Find markers for cluster 8 across sample Cre3 clusters
+stopifnot( DefaultAssay(cre3_int_seu) == "RNA" )
+set.seed(1024)
+conserved_markers[["clt_8"]] <- FindMarkers(cre3_int_seu, ident.1 = 8, verbose = FALSE)
+write.table(x = cbind("Gene_id" = rownames(conserved_markers[["clt_8"]]), conserved_markers[["clt_8"]]), 
+            file = paste(conserved_markers_folder, "clt_8_conserved_markers_for_sample_Cre3_only.tsv", sep = "/"), 
+            sep = "\t", row.names = FALSE, quote = FALSE)
+
+```
+
+The table of conserved markers for cluster 8 against all clusters in sample Cre3 only is present below. 
+
+<br>
+
+```{r echo=FALSE}
+datatable(data = conserved_markers[["clt_8"]], extensions = "Buttons", 
+          caption = "Table of conserved markers for cluster 8 against all the other clusters in the Cre3 sample. It was not applied any filter to this table.", 
+          options = list(dom = "Blfrtip", buttons = c('csv', 'excel')))     
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## Viz: conserved markers
+
+<br>
+
+Please find below the dotplot with the top 3 conserved marker genes identified earlier based on minimum *p*-value. From 26 gene markers, only 19 are unique. The markers for cluster 8 were identified in a different way compared with the remaining as explained previously and the criteria used was the adjusted *p*-value. The assay used to plot was RNA.
+
+```{r viz - conserved markers, fig.height=7.5, fig.width=7.5}
+
+## Visualization - conserved markers
+
+## Parse table to plot for cluster 8
+conserved_markers_clt_8 <- conserved_markers$clt_8
+conserved_markers_clt_8[,"Geneid"] <- rownames(conserved_markers$clt_8)
+conserved_markers_clt_8[,"Cluster"] <- "clt_8"
+col_order <- c("Cluster", "Geneid", colnames(conserved_markers$clt_8))
+conserved_markers_clt_8 <- conserved_markers_clt_8[,col_order]
+
+## Select top 3 markers per cluster
+top_3_markers_by_clt <- conserved_markers_tbl %>% 
+  group_by(Cluster) %>% 
+  arrange(minimump_p_val, .by_group = TRUE) %>% 
+  slice(1:3)
+top_3_markers_clts_genes <- c(top_3_markers_by_clt$Gene_id, conserved_markers_clt_8$Geneid[1:2]) %>% # 26 
+  unique(.) # only 19 unique
+
+## Dot plot 
+stopifnot( DefaultAssay(seu) == "RNA" )
+dot_plot_markers <- DotPlot(seu, features = top_3_markers_clts_genes, cols = c("blue", "red"), 
+                            dot.scale = 8, split.by = "orig.ident") + RotatedAxis()
+
+# save
+ggsave(filename = paste(conserved_markers_folder, "top3_conserved_markers_dotplot_by_cluster_by_sample.pdf", sep = "/"), 
+       plot = dot_plot_markers, width = 7.5, height = 7.5)
+
+# print
+print(dot_plot_markers)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(conserved_markers_folder, "top3_conserved_markers_dotplot_by_cluster_by_sample.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## Convert gene ids to symbols/names
+
+<br>
+
+>WARNING: For now the gene ids will not be converted because even after changing the gene ids from **PCHAS-130010** into **PCHAS_130010**, they did not match the genes in the table mentioned above meaning that the gene annotation do not correspond. 
+
+In order to convert the *Plasmodium chabaudi* gene ids into gene symbols/common names, it was retrieved a mapping table with these conversions from the following Sanger repository: [ftp://ftp.sanger.ac.uk/pub/genedb/releases/latest/Pchabaudi/Pchabaudi_gene_products.tsv](ftp://ftp.sanger.ac.uk/pub/genedb/releases/latest/Pchabaudi/Pchabaudi_gene_products.tsv).
+
+This table was downloaded at 21/04/2021 and it is shared at: `data/database/Pchabaudi_gene_products.tsv`.
+
+Gene ids imported into Seurat cannot contain underscores, meaning that the gene ids with underscores are converted into gene ids with dashes like from **PCHAS_130010** to **PCHAS-130010**. This implies that the gene ids need to be converted back from **PCHAS-130010** into **PCHAS_130010** in order to match gene ids in public databases. The genome version used with `cellranger` was `PCHAS01` (accession GCA_900002335.1 - 2015-11).
+
+```{r convert gene_ids}
+
+## Import conversion mapping table
+#ftp://ftp.sanger.ac.uk/pub/genedb/releases/latest/Pchabaudi/Pchabaudi_gene_products.tsv
+# map_db <- read.table(file = "../data/database/Pchabaudi_gene_products.tsv", 
+#                      header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+#dim(map_db) # 2807    6 - it contains around half of all the P. chabaudi genes
+#head(map_db) # map_db$gene_id %>% unique(.) %>% length(.) #2651 unique genes
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## Gametocytes markers: check where they are
+
+<br>
+
+Below it was checked where the gametocyte cells are represented in the UMAP for the two samples by providing a list of gene markers (list provided by Elisa Jentho): PCHAS-146800, PCHAS-010310, PCHAS-145020, PCHAS-041030, PCHAS-143720. For this analysis were the original RNA counts instead of the corrected integrated counts. 
+
+The gametocytes correspond to cluster 8.
+
+```{r gametocytes markers - umap, fig.height=20, fig.width=10}
+
+## Check gametocytes markers
+
+# gametocyte markers
+gametocyte_markers <- c("PCHAS-146800", "PCHAS-010310", "PCHAS-145020", "PCHAS-041030", "PCHAS-143720")
+stopifnot( all(gametocyte_markers %in% rownames(seu)) )
+
+# lapply(setNames(conserved_markers, names(conserved_markers)), function(x, genes) {
+#   genes[ which( genes %in% rownames(x) )]
+#   }, genes = gametocyte_markers)
+
+## UMAP
+# plot
+gametocyte_markers_umap <- FeaturePlot(seu, features = gametocyte_markers, split.by = "orig.ident", 
+                                       cols = c("grey", "red"))
+
+# save 
+ggsave(filename = paste(plot_folder, "gametocytes_markers_UMAP_plot.pdf", sep = "/"), 
+       plot = gametocyte_markers_umap, height = 20, width = 10)
+
+# print
+print(gametocyte_markers_umap)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plot_folder, "gametocytes_markers_UMAP_plot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## DGE: Cre3 vs Lox2 (volcanos)
+
+<br>
+
+Differential gene expression across samples Cre3 *vs* Lox2 for each cluster was done using the function `FindMarkers()` with its default parameters giving as `ident.1` the clusters for Cre3 sample and as `ident.2` the clusters for Lox2 sample. By default this function uses the method `wilcox` which according to the documentation (citing): *identifies differentially expressed genes between two groups of cells using a Wilcoxon Rank Sum test*. 
+
+It was not possible to test differential gene expression for cluster 8, the gametocyte cluster/population, because this cluster is almost exclusive of the sample Cre3, having only 1 cell in sample Lox2. 
+
+```{r dge - cre3 vs lox2}
+
+## DGE: Cre3 vs Lox2
+
+## Add metadata field to hold sample type and cluster id & change the identity to this
+stopifnot(DefaultAssay(seu) == "RNA")
+seu[["treat"]] <- paste(seu$orig.ident, Idents(seu), sep = "_")
+seu[["clusters"]] <- Idents(seu)
+Idents(seu) <- seu$treat
+
+# create folder directory to save files
+dge_table_folder <- "../results/int_28_05_21/tables/dge_tables"
+if ( ! dir.exists(dge_table_folder) ) dir.create(dge_table_folder)
+
+# loop over clusters & do DGE for each cluster among samples
+dge <- list()
+no_int_clts <- levels(seu$clusters)
+for ( clt in no_int_clts ) { # loop over cluster
+  cell_no_lox2 <- seu@meta.data %>% 
+    filter(orig.ident == "Lox2" & clusters == clt) %>%
+    nrow(.)
+  cell_no_cre3 <- seu@meta.data %>% 
+    filter(orig.ident == "Cre3" & clusters == clt) %>%
+    nrow(.) 
+  if ( (cell_no_cre3 >= 3) & (cell_no_lox2 >= 3) ) { 
+    clt_name <- paste0("clt_", clt) # name of the current cluster
+    ctrl_cells <- paste0("Lox2_", clt) # control/reference name of the current groups of cells to compare 
+    treat_cells <- paste0("Cre3_", clt) # treatment name of the current groups of cells to compare
+    set.seed(1024)
+    dge[[clt_name]] <- FindMarkers(seu, ident.1 = treat_cells, ident.2 = ctrl_cells, 
+                                   verbose = FALSE) # do dge
+    write.table(
+      x = cbind("Geneid" = rownames(dge[[clt_name]]), dge[[clt_name]]), 
+      file = paste(dge_table_folder, paste0(clt_name, "_Cre3_vs_Lox2_dge_table.tsv"), sep = "/"), 
+      sep = "\t", quote = FALSE, row.names = FALSE
+    )
+  }
+}
+
+# restore Seurat identity to clusters
+Idents(seu) <- seu$clusters
+
+## Merge DGE tables in order to plot them below. 
+#
+dge_all <- NULL
+for ( clt in names(dge) ) { 
+  sub_df <- dge[[clt]] 
+  col_names <- colnames(sub_df)
+  sub_df[,"Geneid"] <- rownames(dge[[clt]]) 
+  sub_df[,"Cluster"] <- clt
+  col_order <- c("Cluster", "Geneid", col_names)
+  sub_df <- sub_df[,col_order]
+  if ( is.null(dge_all) ) {
+    dge_all <- sub_df
+  } else {
+    stopifnot( all( colnames(sub_df) == colnames(dge_all) ) )
+    dge_all <- rbind(dge_all, sub_df)
+  }
+}
+write.table(x = dge_all, file = paste(dge_table_folder, "Cre3_vs_Lox2_dge_table_for_all_clusters.tsv", sep = "/"), 
+            sep = "\t", quote = FALSE, row.names = FALSE)
+
+```
+
+<br>
+
+<br>
+
+Please find below the volcano plots for each cluster. You can find each individual volcano plot for each cluster at: `results/int_28_05_2021/plots/volcano_plots`.
+
+```{r dge - volcano plots, fig.height=16, fig.width=10}
+
+## Volcano plots 
+
+# plot all
+dge_volcano_folder <- "../results/int_28_05_21/plots/volcano_plots"
+if ( ! dir.exists(dge_volcano_folder) ) dir.create(dge_volcano_folder)
+volcano_plots <- list()
+for ( clt in names(dge) ) { # loop over dge tables to plot volcanos
+  # plot
+  volcano_plots[[clt]] <- volcano_plot(dge_tbl = dge[[clt]], log2FC_cutoff = 1, 
+                                       padj_cutoff = 0.05, n_top = 5)
+  # save 
+  ggsave(filename = paste(dge_volcano_folder, paste0(clt, "_Cre3_vs_Lox2_volcano_plot.pdf"), sep = "/"), 
+         plot = volcano_plots[[clt]], width = 5, height = 3.5)
+}
+
+## Plot all volcanos
+volcano_plot_all <- cowplot::plot_grid(plotlist = list(
+  volcano_plots$clt_0 + ggtitle("Cluster 0: Cre3 vs Lox2"), 
+  volcano_plots$clt_1 + ggtitle("Cluster 1: Cre3 vs Lox2"),   
+  volcano_plots$clt_2 + ggtitle("Cluster 2: Cre3 vs Lox2"),
+  volcano_plots$clt_3 + ggtitle("Cluster 3: Cre3 vs Lox2"), 
+  volcano_plots$clt_4 + ggtitle("Cluster 4: Cre3 vs Lox2"),
+  volcano_plots$clt_5 + ggtitle("Cluster 5: Cre3 vs Lox2"),
+  volcano_plots$clt_6 + ggtitle("Cluster 6: Cre3 vs Lox2"),
+  volcano_plots$clt_7 + ggtitle("Cluster 7: Cre3 vs Lox2")
+), ncol = 2)
+
+# save
+cowplot::save_plot(volcano_plot_all, 
+                   filename = paste(dge_volcano_folder, "Cre3_vs_Lox2_all_clusters_volcano_plot.pdf", sep = "/"), 
+                   base_height = 12, base_width = 4, ncol = 2)
+
+# print
+print(volcano_plot_all)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(dge_volcano_folder, "Cre3_vs_Lox2_all_clusters_volcano_plot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+Please find below all the genes differentially expressed for each cluster across the samples Cre3 *vs* Lox2. Be aware that the tables are not filtered for adjusted *p*-value, meaning that you might have genes that are not significant based on this criteria. 
+
+<br>
+
+```{r echo=FALSE}
+datatable(data = dge_all, extensions = "Buttons", 
+          caption = "Table of differentially expressed genes for each cluster across the two samples Cre3 vs Lox2, with the exception of cluster 8 due to the lack of cells in the Lox2 sample (n=1). It was not applied any filter to this table.", 
+          options = list(dom = "Blfrtip", buttons = c('csv', 'excel')))     
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## DGE: Cre3 vs Lox2 (heatmaps)
+
+<br>
+
+A gene was considered differentially expressed (and plotted) if it has an absolute log2FC>0 and an adjusted p-value<0.05. 
+
+```{r dge - heatmaps, fig.width=3, fig.height=6}
+
+## DGE - heatmaps
+
+# ## DGE - heatmaps
+# test <- dge$clt_0 %>% 
+#   mutate("Gene" = row.names(dge$clt_0)) %>% 
+#   filter(p_val_adj<0.05) 
+# row.names(test) <- test$Gene  
+# colnames(test) <- "Cluster_0"
+# test <- as.matrix(test[,"avg_log2FC", drop = FALSE])
+# Heatmap(test, name = "Avg log2 FC", show_row_dend = FALSE, 
+#         show_row_names = TRUE, row_names_gp = gpar(fontsize = 6.5))
+
+# average cluster exp by sample
+# split_seu_obj <- SplitObject(object = seu, split.by = "orig.ident")
+seu_by_samp <- seu 
+Idents(seu_by_samp) <- seu$treat
+seu_avg_clt <- AverageExpression(object = seu_by_samp, return.seurat = TRUE)
+
+# get scaled scaled data 
+exp_data_heat <- GetAssayData(object = seu_avg_clt, assay = "RNA", slot = "data")
+ 
+## Get heatmaps for the clusters
+dge_heatmap_folder <- "../results/int_28_05_21/plots/dge_heatmap_plots"
+if ( ! dir.exists(dge_heatmap_folder) ) dir.create(dge_heatmap_folder)
+heatmap_dge_list <- list()
+for ( clt in 0:(length(dge)-1) ) { # 1) loop over clusters 0-8
+  clt_name <- paste("clt", clt, sep = "_")
+  
+  # 2) get dge gene names for each cluster comp across samples
+  dge_genes_exp <- dge[[clt_name]] %>% 
+    mutate("Gene" = row.names(dge[[clt_name]])) %>% 
+    filter(p_val_adj<0.05)
+  dge_genes <- dge_genes_exp %>% pull(Gene)
+  
+  # 3) annotation rows heatmap
+  heat_row_annot <- HeatmapAnnotation(
+    "Regulation" = factor( 
+      x = ifelse(dge_genes_exp$avg_log2FC > 0, "Up", "Down"),
+      levels = c("Up", "Down") 
+      ), 
+    which = "row", 
+    col = list("Regulation" = c( "Up" = "#E64B35FF", "Down" = "#4DBBD5FF") )
+    )
+  
+  # 3) select the scaled gene expression matrix for the comp 
+  exp_clt_samp <- cbind( exp_data_heat[dge_genes,paste0("Lox2_", clt)], 
+                         exp_data_heat[dge_genes,paste0("Cre3_", clt)] ) # sum 'clt' + 1 because it starts in 0  
+  colnames(exp_clt_samp) <- paste0(c("Lox2_", "Cre3_"), clt)
+  
+  # 4) plot heatmap
+  #col_fun <- circlize::colorRamp2(c(0, 2, 4, 6), c("black", "gray", "#FF787D", "#ff252c")) 
+  #c("#FFFFCC", "#FED976", "#FD8D3C", "#BD0026"))
+  set.seed(1024)
+  heatmap_dge_list[[clt_name]] <- Heatmap(matrix = exp_clt_samp, name = "Normalized\nExpression", 
+                                          cluster_columns = FALSE, show_row_dend = FALSE, left_annotation = heat_row_annot,
+                                          row_names_gp = gpar(fontsize = 6.5), column_names_rot = 45, #col = col_fun,
+                                          column_title = "Sample - cluster", column_title_side = "bottom")
+  set.seed(1024)
+  pdf(file = paste(dge_heatmap_folder, paste0(clt_name, "_dge_heatmap_plot.pdf"), sep = "/"))
+  print(heatmap_dge_list[[clt_name]])
+  dev.off()
+}
+
+```
+
+<br>
+
+   + **Cluster 0: Cre3 vs Lox2** (heatmap)
+
+<br>
+
+```{r}
+
+set.seed(1024)
+print(heatmap_dge_list$clt_0)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(dge_heatmap_folder, "clt_0_dge_heatmap_plot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+   + **Cluster 1: Cre3 vs Lox2** (heatmap)
+
+<br>
+
+```{r}
+
+set.seed(1024)
+print(heatmap_dge_list$clt_1)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(dge_heatmap_folder, "clt_1_dge_heatmap_plot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+   + **Cluster 2: Cre3 vs Lox2** (heatmap)
+
+<br>
+
+```{r}
+
+set.seed(1024)
+print(heatmap_dge_list$clt_2)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(dge_heatmap_folder, "clt_2_dge_heatmap_plot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+   + **Cluster 3: Cre3 vs Lox2** (heatmap)
+
+<br>
+
+```{r}
+
+set.seed(1024)
+print(heatmap_dge_list$clt_3)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(dge_heatmap_folder, "clt_3_dge_heatmap_plot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+   + **Cluster 4: Cre3 vs Lox2** (heatmap)
+
+<br>
+
+```{r}
+
+set.seed(1024)
+print(heatmap_dge_list$clt_4)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(dge_heatmap_folder, "clt_4_dge_heatmap_plot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+   + **Cluster 5: Cre3 vs Lox2** (heatmap)
+
+<br>
+
+```{r}
+
+set.seed(1024)
+print(heatmap_dge_list$clt_5)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(dge_heatmap_folder, "clt_5_dge_heatmap_plot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+   + **Cluster 6: Cre3 vs Lox2** (heatmap)
+
+<br>
+
+```{r}
+
+set.seed(1024)
+print(heatmap_dge_list$clt_6)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(dge_heatmap_folder, "clt_6_dge_heatmap_plot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+   + **Cluster 7: Cre3 vs Lox2** (heatmap)
+
+<br>
+
+```{r}
+
+set.seed(1024)
+print(heatmap_dge_list$clt_7)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(dge_heatmap_folder, "clt_7_dge_heatmap_plot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## Functional enrichment
+
+<br>
+
+In order to perform a functional enrichment analysis between the differentially expressed up- and down-regulated genes obtained from each pairwise comparison between each cluster across Cre3 *vs* Lox2, it was used the `gprofiler2` R package (v.`r packageVersion("gprofiler2")`) [@gprofiler2], an interface to the [g:Profiler](https://biit.cs.ut.ee/gprofiler/gost) web browser tool. The function `gost()` was applied in order to perform enrichment based on the list of up- or down-regulated genes, between each pairwise comparison (independently), against the annotated genes (domain_scope = "annotated") of the organism *Plasmodium chabaudi* (`organism = "pchabaudi"`). The gene lists were ordered by increasing adjusted *p*-value (`ordered_query = TRUE`) in order to generate a GSEA (Gene Set Enrichment Analysis) style *p*-values. This allows to start the enrichment testing from the top most biological relevant genes with subsequent tests involving larger sets of genes. In addition, only statistically significant (`user_threshold = 0.05`) enriched functions are returned (`significant = TRUE`) after multiple testing correction with the default method g:SCS (`correction_method = "g_SCS"`). Finally evidence codes are added to the final result (`evcodes = TRUE`).
+
+Functional databases available to *Plasmodium chabaudi* are the following:
+
+   + Gene Ontology (GO or by branch GO:MF, GO:BP, GO:CC)
+
+   + KEGG (KEGG)
+
+<br>
+
+It was tested functional enrichment for all clusters, with the exception of cluster 8, because it lacks differential gene expression data. It was given individually a list of up- (avg_log2FC > 0) or downregulated (avg_log2FC < 0) genes ranked (from the most significant to the lowest) by adjusted *p*-values (only genes with an adjusted *p*-value < 0.05). 
+
+The result of this analysis is a plot and a table for each up- and down-regulated gene list from each cluster pairwise comparison across Cre3 *vs* Lox2, that shows the functional enrichment based on the -log10 of the adjusted *p*-value across different functional databases (see above). Only significant functions are reported. The table contains the following columns/information (the information below was copied entirely from the original vignette [here](https://cran.r-project.org/web/packages/gprofiler2/vignettes/gprofiler2.html#gene-list-functional-enrichment-analysis-with-gost)): 
+
+<br>
+
+   + **query**: the name of the input query which by default is the order of query with the prefix "query_". This can be changed by using a named list input.
+   
+   + **significant**: indicator for statistically significant results
+   
+   + **p_value**: hypergeometric p-value after correction for multiple testing
+   
+   + **term_size**: number of genes that are annotated to the term
+    
+   + **query_size**: number of genes that were included in the query. This might be different from the size of the original list if:
+   
+      + any genes were mapped to multiple Ensembl gene IDs
+      
+      + any genes failed to be mapped to Ensembl gene IDs
+      
+      + the parameter ordered_query = TRUE and the optimal cutoff for the term was found before the end of the query
+        
+      + the domain_scope was set to "annotated" or "custom"
+    
+   + **intersection_size**: the number of genes in the input query that are annotated to the corresponding term
+    
+   + **precision**: the proportion of genes in the input list that are annotated to the function (defined as intersection_size/query_size)
+    
+   + **recall**: the proportion of functionally annotated genes that the query recovers (defined as intersection_size/term_size)
+    
+   + **term_id**: unique term identifier (e.g GO:0005005)
+   
+   + **source**: the abbreviation of the data source for the term (e.g. GO:BP)
+   
+   + **term_name**: the short name of the function
+   
+   + **effective_domain_size**: the total number of genes "in the universe" used for the hypergeometric test
+   
+   + **source_order**: numeric order for the term within its data source (this is important for drawing the results)
+   
+   + **parents**: list of term IDs that are hierarchically directly above the term. For non-hierarchical data sources this points to an artificial root node.
+
+<br>
+
+In the bubble plots represented below, functions that have a -log10(adjusted *p*-value)>16 will be capped; *i.e.*, they will appear close to the vertical dashed black line. All these results reported below were run at 23/04/2021 using the archived version of the `gprofiler2` server - Ensembl 102, Ensembl Genomes 49 (database built on 2020-12-15): [https://biit.cs.ut.ee/gprofiler_archive3/e102_eg49_p15/gost](https://biit.cs.ut.ee/gprofiler_archive3/e102_eg49_p15/gost). 
+
+```{r get reg - up & down lists}
+
+## Get up and down gene lists and parse them
+
+reg_gene_list <- list()
+for ( clt in names(dge) ) { # select dge by cluster and retrieve name
+  sub_df <- dge[[clt]]
+  sub_df[,"Geneid"] <- rownames(sub_df)
+  gene_ids_up <- sub_df %>% 
+    filter(p_val_adj < 0.05 & avg_log2FC > 0) %>% 
+    arrange(p_val_adj) %>% 
+    pull(Geneid)
+  gene_ids_down <- sub_df %>% 
+    filter(p_val_adj < 0.05 & avg_log2FC < 0) %>% 
+    arrange(p_val_adj) %>% 
+    pull(Geneid)  
+  reg_gene_list[[clt]] <- list()
+  reg_gene_list[[clt]][["up"]] <- gsub(pattern = "-", replacement = "_", x = gene_ids_up)
+  reg_gene_list[[clt]][["down"]] <- gsub(pattern = "-", replacement = "_", x = gene_ids_down)
+}
+
+# create folders.
+r_object_folder <- "../results/int_28_05_21/R_objects"
+if ( ! dir.exists(r_object_folder) ) dir.create(r_object_folder)
+func_enrich_folder <- "../results/int_28_05_21/tables/functional_enrichment"
+if ( ! dir.exists(func_enrich_folder) ) dir.create(func_enrich_folder)
+
+```
+
+```{r func enrich, echo=TRUE, eval=FALSE}
+
+### Functional enrichment of DEG 
+
+## Run gprofiler2
+func_enrich <- list()
+set_base_url("https://biit.cs.ut.ee/gprofiler_archive3/e102_eg49_p15")
+for ( clt in names(reg_gene_list) ){ # loop over list and do functional enrichment
+  #print(get_base_url())
+  func_enrich[[clt]] <- list()
+  set.seed(1024)
+  func_enrich[[clt]][["up"]] <- gost(query = reg_gene_list[[clt]][["up"]], 
+                                     organism = "pchabaudi", ordered_query = TRUE, 
+                                     multi_query = FALSE, significant = TRUE, exclude_iea = FALSE, 
+                                     measure_underrepresentation = FALSE, evcodes = TRUE, 
+                                     user_threshold = 0.05, correction_method = "g_SCS", 
+                                     domain_scope = "annotated", custom_bg = NULL, 
+                                     numeric_ns = "", sources = NULL)
+  if ( ! is.null(func_enrich[[clt]][["up"]]$result) ) {
+    sub_df_up <- func_enrich[[clt]][["up"]]$result %>% 
+    apply(X = ., MARGIN = 2, FUN =  function(x) as.character(x)) 
+    write.table(x = sub_df_up, 
+                file = paste(func_enrich_folder, paste0(clt, "_up_functional_enrichment_table.tsv"), 
+                             sep = "/"), 
+                quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
+  }
+  set.seed(1024)
+  func_enrich[[clt]][["down"]] <- gost(query = reg_gene_list[[clt]][["down"]], 
+                                       organism = "pchabaudi", ordered_query = TRUE, 
+                                       multi_query = FALSE, significant = TRUE, exclude_iea = FALSE, 
+                                       measure_underrepresentation = FALSE, evcodes = TRUE, 
+                                       user_threshold = 0.05, correction_method = "g_SCS", 
+                                       domain_scope = "annotated", custom_bg = NULL, 
+                                       numeric_ns = "", sources = NULL)
+  if ( ! is.null(func_enrich[[clt]][["down"]]$result) ) {
+    sub_df_down <- func_enrich[[clt]][["down"]]$result %>% 
+    apply(X = ., MARGIN = 2, FUN =  function(x) as.character(x)) 
+    write.table(x = sub_df_down, 
+                file = paste(func_enrich_folder, paste0(clt, "_down_functional_enrichment_table.tsv"), 
+                             sep = "/"), 
+                quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
+  }
+}
+
+# Create R object
+saveRDS(object = func_enrich, file = paste(r_object_folder, "func_enrich.rds", sep = "/"))
+
+```
+
+```{r import func enrich}
+
+# Import functional enrichment object to avoid to have to run the API app
+func_enrich <- readRDS(file = paste(r_object_folder, "func_enrich.rds", sep = "/"))
+
+```
+
+<br>
+
+Among the clusters tested, it was only found significant functional enrichment pathways for cluster 1 (up and down lists), 2 (up), 3 (up and down), 4 (up), 6 (down) and 7 (up). 
+
+<br>
+
+<br>
+
+   + Cluster 1 (up)
+   
+<br>
+
+```{r fig.width=10}
+gostplot(func_enrich$clt_1$up, capped = TRUE, interactive = TRUE)
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest table
+downloadthis::download_file(
+  path = paste(func_enrich_folder, "clt_1_up_functional_enrichment_table.tsv", sep = "/"),
+  output_name = "table",
+  button_label = "Download table",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+   + Cluster 1 (down)
+   
+<br>
+
+```{r fig.width=10}
+gostplot(func_enrich$clt_1$down, capped = TRUE, interactive = TRUE)
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest table
+downloadthis::download_file(
+  path = paste(func_enrich_folder, "clt_1_down_functional_enrichment_table.tsv", sep = "/"),
+  output_name = "table",
+  button_label = "Download table",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+   + Cluster 2 (up)
+   
+<br>
+
+```{r fig.width=10}
+gostplot(func_enrich$clt_2$up, capped = TRUE, interactive = TRUE)
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest table
+downloadthis::download_file(
+  path = paste(func_enrich_folder, "clt_2_up_functional_enrichment_table.tsv", sep = "/"),
+  output_name = "table",
+  button_label = "Download table",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+   + Cluster 3 (up)
+   
+<br>
+
+```{r fig.width=10}
+gostplot(func_enrich$clt_3$up, capped = TRUE, interactive = TRUE)
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest table
+downloadthis::download_file(
+  path = paste(func_enrich_folder, "clt_3_up_functional_enrichment_table.tsv", sep = "/"),
+  output_name = "table",
+  button_label = "Download table",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+   + Cluster 3 (down)
+   
+<br>
+
+```{r fig.width=10}
+gostplot(func_enrich$clt_3$down, capped = TRUE, interactive = TRUE)
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest table
+downloadthis::download_file(
+  path = paste(func_enrich_folder, "clt_3_down_functional_enrichment_table.tsv", sep = "/"),
+  output_name = "table",
+  button_label = "Download table",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+   + Cluster 4 (up)
+   
+<br>
+
+```{r fig.width=10}
+gostplot(func_enrich$clt_4$up, capped = TRUE, interactive = TRUE)
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest table
+downloadthis::download_file(
+  path = paste(func_enrich_folder, "clt_4_up_functional_enrichment_table.tsv", sep = "/"),
+  output_name = "table",
+  button_label = "Download table",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+   + Cluster 6 (down)
+   
+<br>
+
+```{r fig.width=10}
+gostplot(func_enrich$clt_6$down, capped = TRUE, interactive = TRUE)
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest table
+downloadthis::download_file(
+  path = paste(func_enrich_folder, "clt_6_down_functional_enrichment_table.tsv", sep = "/"),
+  output_name = "table",
+  button_label = "Download table",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+   + Cluster 7 (up)
+   
+<br>
+
+```{r fig.width=10}
+gostplot(func_enrich$clt_7$up, capped = TRUE, interactive = TRUE)
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest table
+downloadthis::download_file(
+  path = paste(func_enrich_folder, "clt_7_up_functional_enrichment_table.tsv", sep = "/"),
+  output_name = "table",
+  button_label = "Download table",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+### Functional enrichment: barplots
+
+<br>
+
+Please find below the barplots for the functional enrichment analyses presented above. 
+
+```{r func enrich - barplots}
+
+## Functional enrichments - barplots
+
+# Create folder to save results
+func_enrich_barplots_folder <- "../results/int_28_05_21/plots/func_enrich_barplots"
+if ( ! dir.exists(func_enrich_barplots_folder) ) dir.create(func_enrich_barplots_folder)
+
+# Plot and save data
+func_enrich_list <- list()
+for ( clt in names(func_enrich) ) { # loop over cluster
+  if ( ! is.null(names(func_enrich[[clt]])) ) { # if cluster is not NULL
+    func_enrich_list[[clt]] <- list()
+    for ( reg in names(func_enrich[[clt]]) ) { # loop over regulation: 'up' and 'down'
+      # Plot barplot of functional enrichment 
+      func_enrich_list[[clt]][[reg]] <- func_enrich[[clt]][[reg]]$result %>% 
+        arrange(source, p_value) %>%
+        mutate(term_name = factor(term_name, levels = rev(unique(term_name)))) %>%
+        ggplot(data = ., mapping = aes(x = term_name, y = -log10(p_value), fill = source)) + 
+        geom_bar(stat = "identity") + 
+        ggsci::scale_fill_npg(name = "Source") +
+        facet_grid( source ~ . , scales = "free_y", space = "free") +
+        coord_flip() + 
+        theme_bw() + 
+        ylab("-log10 (adjusted p-value)") + 
+        xlab("Term name") + 
+        theme(axis.text = element_text(size = 10, color = "black"))
+      # save
+      ggsave(filename = paste(func_enrich_barplots_folder, paste0(clt, "_", reg, "_func_enrich_barplot.pdf"), sep = "/"), 
+             plot = func_enrich_list[[clt]][[reg]])
+    }
+  }
+}
+
+```
+
+<br>
+
+<br>
+
+   + Cluster 1 (up)
+   
+<br>
+
+```{r}
+print(func_enrich_list$clt_1$up)
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest plot
+downloadthis::download_file(
+  path = paste(func_enrich_barplots_folder, "clt_1_up_func_enrich_barplot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+   + Cluster 1 (down)
+   
+<br>
+
+```{r}
+print(func_enrich_list$clt_1$down)
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest plot
+downloadthis::download_file(
+  path = paste(func_enrich_barplots_folder, "clt_1_down_func_enrich_barplot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+   + Cluster 2 (up)
+   
+<br>
+
+```{r}
+print(func_enrich_list$clt_2$up)
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest plot
+downloadthis::download_file(
+  path = paste(func_enrich_barplots_folder, "clt_2_up_func_enrich_barplot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+   + Cluster 3 (up)
+   
+<br>
+
+```{r}
+print(func_enrich_list$clt_3$up)
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest plot
+downloadthis::download_file(
+  path = paste(func_enrich_barplots_folder, "clt_3_up_func_enrich_barplot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+   + Cluster 3 (down)
+   
+<br>
+
+```{r}
+print(func_enrich_list$clt_3$down)
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest plot
+downloadthis::download_file(
+  path = paste(func_enrich_barplots_folder, "clt_3_down_func_enrich_barplot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+   + Cluster 4 (up)
+   
+<br>
+
+```{r}
+print(func_enrich_list$clt_4$up)
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest plot
+downloadthis::download_file(
+  path = paste(func_enrich_barplots_folder, "clt_4_up_func_enrich_barplot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+   + Cluster 6 (down)
+   
+<br>
+
+```{r}
+print(func_enrich_list$clt_6$down)
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest plot
+downloadthis::download_file(
+  path = paste(func_enrich_barplots_folder, "clt_6_down_func_enrich_barplot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+<br>
+
+   + Cluster 7 (up)
+   
+<br>
+
+```{r}
+print(func_enrich_list$clt_7$up)
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest plot
+downloadthis::download_file(
+  path = paste(func_enrich_barplots_folder, "clt_7_up_func_enrich_barplot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+``` 
+
+<br>
+
+```{r save main R integrated obj}
+
+## save main R integrated obj
+
+saveRDS(object = seu, file = paste(r_object_folder, "seu.rds", sep = "/"))
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+    
+## Deliver
+
+Folders inside the project folder:
+
+   + results: folder that contains all the results obtained in this analysis;
+
+   + report: folder that contains the report and code used herein;
+
+   + data: folder that contains the data used herein;
+   
+   + scripts: folder that contains the scripts used herein;
+
+   + info: folder that contains some useful information (*i.e.*, papers, etc) used herein;
+  
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+#### R packages used and respective versions
+
+```{r References, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+## R packages and versions used in these analyses
+
+sessionInfo()
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+<br>
+<br>
+
+
+## References
+
+\printbibliography

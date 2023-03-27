@@ -1,0 +1,224 @@
+---
+title: 'Report: extract cell and cluster IDs and UMAP embeddings from the Seurat object - pseudotime - part 1'
+author: "Jingtao Lilue and António Sousa - UBI-IGC (e-mail: <agsousa@igc.gulbenkian.pt>)"
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output: 
+  html_document:
+    toc: true 
+    toc_float: true
+    theme: united
+    code_folding: hide
+bibliography: bibliography.bib
+---
+
+<br>
+
+---
+
+## Request
+
+<br>
+
+This report includes the description of the first part of the pseudotime analysis which consisted in retrieving thecell and cluster IDs and UMAP embeddings to use later to project RNA velocity:
+
+<br>
+
+   1. Pseudotime of the integrated scRNA-seq samples Cre3 and Lox2 of *Plasmodium chabaudi* samples (part 1).
+   
+<br>
+
+This analysis is based on the following tutorial: [https://github.com/basilkhuder/Seurat-to-RNA-Velocity](https://github.com/basilkhuder/Seurat-to-RNA-Velocity).
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	fig.align = "center",
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+```{r klippy, echo=FALSE}
+klippy::klippy(position = c('top', 'right'))
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## About this report
+
+<br>
+
+The R version used was `r paste0(version$major, ".", version$minor)` [@r]. This report was built with the `rmarkdown` R package (v.`r packageVersion("rmarkdown")`) [@rmarkdown_1; @rmarkdown_2; @rmarkdown_3]. See the full list of packages and versions used at the end of this report - **R packages used and respective versions**.
+
+The figures and tables displayed through the report can be download in *pdf* and *tab-separated* format by clicking on the bottom left **Download plot** and **Download table** button that appears after each plot and table, respectively. 
+
+```{r seed}
+
+## Set seed 
+set.seed(seed = 1024) # to keep reproducibility
+
+```
+
+```{r import packages, message=FALSE, warning=FALSE}
+
+## Import packages 
+
+library("Seurat", quietly = TRUE)
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## Import data
+
+<br>
+
+The R object integrated corresponding to the **Cre3** and **Lox2** 10x scRNA-seq samples processed independently before was imported in order to perform retrieve and export cell and cluster IDs and UMAP embeddings for pseudotime analyses. 
+
+```{r import seurat objs}
+
+## Import integrated Seurat object: Cre3 and Lox2 
+
+# import obj integrated
+seu <- readRDS(file = "../results/int/R_objects/seu.rds")
+
+# Seurat: split objects by sample
+sobjList <- SplitObject(seu, split.by = "orig.ident") 
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## Export data: cell & clusters IDs & embeddings 
+
+<br>
+
+Data to perform velocity RNA analysis was exported to: `results/velocyto/seurat_data`
+
+```{r export info}
+
+# dir to save 
+seurat_data <- "../results/velocyto/seurat_data"
+if ( ! dir.exists(seurat_data) ) dir.create(seurat_data, recursive = TRUE)
+
+# save cell_ids for both samples
+write.csv(Cells(sobjList$Cre3), file = paste(seurat_data, "cre3_samp_cellID_obs.csv", sep = "/"), 
+          row.names = FALSE)
+write.csv(Cells(sobjList$Lox2), file = paste(seurat_data, "lox2_samp_cellID_obs.csv", sep = "/"), 
+          row.names = FALSE)
+
+# save UMAP embeddings for both samples
+write.csv(Embeddings(sobjList$Cre3, reduction = "umap"), 
+          file = paste(seurat_data,"cre3_UMAP_cell_embeddings.csv", sep = "/"))
+write.csv(Embeddings(sobjList$Lox2, reduction = "umap"), 
+          file = paste(seurat_data,"lox2_UMAP_cell_embeddings.csv", sep = "/"))
+
+# save cluster information
+write.csv(sobjList$Cre3@meta.data[,"seurat_clusters", drop = FALSE], 
+          file = paste(seurat_data,"cre3_clusters.csv", sep = "/"))
+write.csv(sobjList$Lox2@meta.data[,"seurat_clusters", drop = FALSE], 
+          file = paste(seurat_data,"lox2_clusters.csv", sep = "/"))
+
+# export the colors used in Seurat UMAP clusters
+# Cre3
+cre3_umap_colors <- DimPlot(sobjList$Cre3)
+cre3_umap_colors <- ggplot2::ggplot_build(cre3_umap_colors)
+cre3_umap_colors <- cre3_umap_colors$data[[1]]
+cre3_umap_colors <- cre3_umap_colors[,"colour", drop = FALSE] 
+cre3_umap_colors[,"cluster"] <- row.names(sobjList$Cre3@meta.data)  
+write.csv(cre3_umap_colors, file = paste(seurat_data,"cre3_umap_colors.csv", sep = "/"), row.names = FALSE)
+
+# Lox2
+lox2_umap_colors <- DimPlot(sobjList$Lox2)
+lox2_umap_colors <- ggplot2::ggplot_build(lox2_umap_colors)
+lox2_umap_colors <- lox2_umap_colors$data[[1]]
+lox2_umap_colors <- lox2_umap_colors[,"colour", drop = FALSE] 
+lox2_umap_colors[,"cluster"] <- row.names(sobjList$Lox2@meta.data)  
+write.csv(lox2_umap_colors, file = paste(seurat_data,"lox2_umap_colors.csv", sep = "/"), row.names = FALSE)
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+    
+## Deliver
+
+Folders inside the project folder:
+
+   + results: folder that contains all the results obtained in this analysis;
+
+   + report: folder that contains the report and code used herein;
+
+   + data: folder that contains the data used herein;
+   
+   + scripts: folder that contains the scripts used herein;
+
+   + info: folder that contains some useful information (*i.e.*, papers, etc) used herein;
+  
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+#### R packages used and respective versions
+
+```{r References, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+## R packages and versions used in these analyses
+
+sessionInfo()
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+<br>
+<br>
+
+
+## References
+
+\printbibliography

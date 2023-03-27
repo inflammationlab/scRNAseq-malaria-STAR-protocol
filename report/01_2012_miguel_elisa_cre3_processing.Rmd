@@ -1,0 +1,1424 @@
+---
+title: 'Report: filtering, dimensional reduction, clustering and marker detection for Cre3 scRNA sample'
+author: "Jingtao Lilue and António Sousa - UBI-IGC (e-mail: <agsousa@igc.gulbenkian.pt>)"
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output: 
+  html_document:
+    toc: true 
+    toc_float: true
+    theme: united
+    code_folding: hide
+bibliography: bibliography.bib
+---
+
+<br>
+
+---
+
+## Request
+
+<br>
+
+This report includes a description and the results of the analyses requested by Elisa Jentho at 16/04/2021: 
+
+   1. Process the Cre3 sample of *Plasmodium chabaudi* scRNA-seq sample with `Seurat` (filtering, dimensional reduction, clustering and marker detection).
+
+<br>
+
+The figures and tables displayed through the report can be download in *pdf* and *tab-separated* format by clicking on the bottom left **Download plot** and **Download table** button that appears after each plot and table, respectively. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	fig.align = "center",
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+```{r klippy, echo=FALSE}
+klippy::klippy(position = c('top', 'right'))
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## About this report
+
+<br>
+
+The R version used was `r paste0(version$major, ".", version$minor)` [@r]. This report was built with the `rmarkdown` R package (v.`r packageVersion("rmarkdown")`) [@rmarkdown_1; @rmarkdown_2; @rmarkdown_3]. See the full list of packages and versions used at the end of this report - **R packages used and respective versions**.
+
+The processing, filtering, clustering and dimensionality reduction of the 10x Cre3 sample was performed with the `Seurat` R package (v.`r packageVersion("Seurat")`) [@seurat_1; @seurat_2; @seurat_3; @seurat_4].
+
+```{r seed}
+
+## Set seed 
+set.seed(seed = 1024) # to keep reproducibility
+
+```
+
+```{r import packages, message=FALSE, warning=FALSE}
+
+## Import packages 
+
+library("dplyr", quietly = TRUE)
+library("DT", quietly = TRUE) # package to print nice in the html report 
+library("Seurat", quietly = TRUE)
+library("gplots", quietly = TRUE)
+library("Matrix", quietly = TRUE)
+library("ggplot2", quietly = TRUE)
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## 10x Cre3 sample: analysis
+
+<br>
+
+### Import 10x Cre3 sample
+
+<br>
+
+The `cellranger` output that resulted from the analysis of the Cre3 sample of *Plasmodium chabaudi* was imported to R with the function `Read10X()` by specifying the files at (folder provided by Elisa Jentho): `data/ftp01.igc.gulbenkian.pt/Cre3_count_full/outs/filtered_feature_bc_matrix`. Then, the data was converted into a `Seurat` class object with the function `CreateSeuratObject()`.
+
+Genes that are not at least in 3 cells were discarded. 
+
+```{r import 10x Cre3}
+
+# import 10x Cre3 sample
+cre3_sample_dir <- "../data/ftp01.igc.gulbenkian.pt/Cre3_count_full/outs/filtered_feature_bc_matrix"
+cre3 <- Read10X(data.dir = cre3_sample_dir)
+
+# create Seurat object
+cre3_seu <- CreateSeuratObject(counts = cre3, project = "Cre3", min.cells = 3) # 4554 genes x 15543 cells
+
+```
+
+The Cre3 sample before applying any filtering has `r nrow(cre3_seu@assays$RNA@counts)` genes and `r ncol(cre3_seu@assays$RNA@counts)` cells. 
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+### QC & Filtering 
+
+<br>
+
+The default violin quality-control (QC) plots can be found below. They highlight the following characteristics *per* cell: 
+
+   + *number of features* (**nFeature_RNA**): it is the number of different genes expressed *per* cell.
+   
+   
+   + *number of counts* (**nCount_RNA**): it is the total number of UMIs/molecules/sequences expressed *per* cell.
+
+<br>
+
+The QC plots are presented below show.
+
+<br>
+
+```{r QC - violins}
+
+## QC violins
+
+## plot features to decide the filters to be applied
+vln_plot_qc <- VlnPlot(cre3_seu, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2)
+
+# save 
+qc_plots_dir <- "../results/cre3/qc_plots"
+if( ! dir.exists(qc_plots_dir) ) dir.create(qc_plots_dir, recursive = TRUE)
+ggsave(filename = paste(qc_plots_dir, "qc_violin_plots_unfiltered.pdf", sep = "/"), 
+       plot = vln_plot_qc)
+
+# print
+print(vln_plot_qc)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(qc_plots_dir, "qc_violin_plots_unfiltered.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+In order to obtain more informative descriptions, the same information was plotted again but this time as boxplots. It was added the information about the whiskers in order to use them as a potential reference to apply thresholds for filtering bad quality cells.
+
+<br>
+
+```{r QC - boxplots, fig.width=10}
+
+# determine thresholds based on extremes below or above whiskers
+metrics_2_check <- colnames(cre3_seu@meta.data)[2:3]
+
+# loop over metrics of quality to filter: get whiskers
+params_2_filter <- lapply(setNames(metrics_2_check, metrics_2_check), function(x) {
+  boxplot.stats(cre3_seu@meta.data[,x])$stats[c(1,5)]
+})
+
+# loop over the metrics and give the numbers filtered
+cells_filtered <- lapply(setNames(metrics_2_check, metrics_2_check), function(x) {
+  c( length(which(cre3_seu@meta.data[,x] < params_2_filter[[x]][1])), 
+    length(which(cre3_seu@meta.data[,x] > params_2_filter[[x]][2])) )
+})
+
+# plot data
+qc_plots[["boxplots"]] <- qc_plots <- list()
+
+# n feature
+qc_plots[["boxplots"]][[metrics_2_check[2]]] <- cre3_seu@meta.data %>% 
+  ggplot(data = ., aes(x = orig.ident, y = nFeature_RNA)) + 
+  #geom_boxplot() +
+  geom_boxplot(outlier.shape = NA) + 
+  geom_jitter(size = 0.5, alpha = 0.25) + 
+  theme_minimal() + 
+  annotate(geom = "text", x = 1, y = 0, #params_2_filter$nFeature_RNA[1] + 300, 
+           label = paste0(params_2_filter$nFeature_RNA[1], 
+                          " (n=", cells_filtered$nFeature_RNA[1],")"), 
+           size = 4.5, color = "blue") +
+  annotate(geom = "text", x = 1, y = params_2_filter$nFeature_RNA[2] + 250, 
+           label = paste0(params_2_filter$nFeature_RNA[2], 
+                          " (n=", cells_filtered$nFeature_RNA[2],")"), 
+           size = 4.5, color = "blue") +
+  geom_hline(yintercept = params_2_filter$nFeature_RNA, linetype = "dashed", color = "red") + 
+  theme(axis.text = element_text(size = 20, color = "black"), 
+        axis.title = element_text(size = 20, color = "black"), 
+        text = element_text(size = 20, color = "black")) 
+
+# n count 
+qc_plots[["boxplots"]][[metrics_2_check[1]]] <- cre3_seu@meta.data %>% 
+  ggplot(data = ., aes(x = orig.ident, y = nCount_RNA)) + 
+  #geom_boxplot() +
+  geom_boxplot(outlier.shape = NA) + 
+  geom_jitter(size = 0.5, alpha = 0.25) + 
+  theme_minimal() + 
+  annotate(geom = "text", x = 1, y = 0, #params_2_filter$nCount_RNA[1],
+           label = paste0(params_2_filter$nCount_RNA[1],
+                          " (n=", cells_filtered$nCount_RNA[1],")"), 
+           size = 3.5, color = "blue") +
+  annotate(geom = "text", x = 1, y = params_2_filter$nCount_RNA[2] + 1000,
+           label = paste0(params_2_filter$nCount_RNA[2],
+                          " (n=", cells_filtered$nCount_RNA[2],")"), 
+           size = 3.5, color = "blue") +
+  geom_hline(yintercept = params_2_filter$nCount_RNA, linetype = "dashed", color = "red") +
+  theme(axis.text = element_text(size = 20, color = "black"), 
+        axis.title = element_text(size = 20, color = "black"), 
+        text = element_text(size = 20, color = "black")) 
+
+# altogether
+qc_plots_boxplots_all <- cowplot::plot_grid(qc_plots[["boxplots"]]$nCount_RNA, 
+                                            qc_plots[["boxplots"]]$nFeature_RNA, 
+                                            ncol = 2)
+
+# save 
+cowplot::save_plot(filename = paste(qc_plots_dir, "qc_boxplots_unfiltered.pdf", sep = "/"), 
+                   plot = qc_plots_boxplots_all, ncol = 2, base_width = 4, base_height = 6)
+
+# print
+print(qc_plots_boxplots_all)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(qc_plots_dir, "qc_boxplots_unfiltered.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+Below it is represented the same information as above, but as histograms instead of boxplots. The bin width used for the **nFeature_RNA** and **nCount_RNA** histogram bars was 50. 
+
+<br>
+
+```{r QC - histograms, fig.width=18, fig.height=6}
+
+## plot the distribution of the plots mentioned above
+
+# plot data
+qc_plots[["histograms"]] <- list()
+
+# n feature
+qc_plots[["histograms"]][[metrics_2_check[2]]] <- cre3_seu@meta.data %>% 
+  ggplot(data = ., aes(x = nFeature_RNA, fill = orig.ident)) + 
+  geom_histogram(binwidth = 50, alpha = 0.5) +
+  theme_minimal() + 
+  ggsci::scale_fill_npg(name = "Sample") +
+  annotate(geom = "text", x = 400, y = 4000,
+           label = paste0(750,
+                          " (n=", 15537,")"),
+           size = 4.5, color = "blue") +
+  annotate(geom = "text", x = 1250, y = 4000,
+           label = paste0(750,
+                          " (n=", 6,")"),
+           size = 4.5, color = "blue") +
+  annotate("rect", xmin = 0, xmax = 750, ymin = 0, ymax = 7500, alpha = .25, fill = "#E64B35FF") +
+  annotate("rect", xmin = 750, xmax = 1750, ymin = 0, ymax = 7500, alpha = .25, fill = "#4DBBD5FF") +
+  geom_vline(xintercept = 750, linetype = "dashed", color = "red") + 
+  theme(axis.text = element_text(size = 20, color = "black"), 
+        axis.title = element_text(size = 20, color = "black"), 
+        text = element_text(size = 20, color = "black")) + 
+  ylab("Frequency (counts)")
+
+# n count 
+qc_plots[["histograms"]][[metrics_2_check[1]]] <- cre3_seu@meta.data %>% 
+  ggplot(data = ., aes(x = nCount_RNA, fill = orig.ident)) + 
+  geom_histogram(binwidth = 50, alpha = 0.5) +
+  theme_minimal() + 
+  ggsci::scale_fill_npg(name = "Sample") +
+  annotate(geom = "text", x = 750, y = 4000,
+           label = paste0(1500,
+                          "\n (n=", 15541,")"),
+           size = 4.5, color = "blue") +
+  annotate(geom = "text", x = 4000, y = 4000,
+           label = paste0(1500,
+                          " (n=", 2,")"),
+           size = 4.5, color = "blue") +
+  annotate("rect", xmin = 0, xmax = 1500, ymin = 0, ymax = 5000, alpha = .25, fill = "#E64B35FF") +
+  annotate("rect", xmin = 1500, xmax = 6000, ymin = 0, ymax = 5000, alpha = .25, fill = "#4DBBD5FF") +
+  geom_vline(xintercept = 1500, linetype = "dashed", color = "red") +
+  theme(axis.text = element_text(size = 20, color = "black"),
+        axis.title = element_text(size = 20, color = "black"),
+        text = element_text(size = 20, color = "black")) +
+  ylab("Frequency (counts)")
+
+# altogether
+qc_plots_histograms_all <- cowplot::plot_grid(qc_plots[["histograms"]]$nCount_RNA,
+                                              qc_plots[["histograms"]]$nFeature_RNA, 
+                                              ncol = 2)
+
+# save 
+cowplot::save_plot(filename = paste(qc_plots_dir, "qc_histograms_unfiltered.pdf", sep = "/"), 
+                   plot = qc_plots_histograms_all, ncol = 2, base_width = 10, base_height = 6)
+
+# print
+print(qc_plots_histograms_all)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(qc_plots_dir, "qc_histograms_unfiltered.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+Below it is highlighted a few more QC plots that show the relationship between the **nCount_RNA** *versus* **percent.mt** or **nFeature_RNA**. 
+
+<br>
+
+```{r QC - feature scatter}
+
+## scatter feature plots
+scatter_feature_plots <- list()
+
+# nCount_vs_nFeature
+scatter_feature_plots[["nCount_vs_nFeature"]] <- FeatureScatter(cre3_seu, feature1 = "nCount_RNA", feature2 = "nFeature_RNA") + 
+  geom_vline(xintercept = 1500, linetype = "dashed") + 
+  geom_hline(yintercept = 750, linetype = "dashed") + 
+  theme_minimal() + ggtitle("") +
+  theme(axis.text = element_text(size = 16, color = "black"), 
+        axis.title = element_text(size = 16, color = "black"), 
+        text = element_text(size = 16, color = "black")) +
+  annotate("rect", xmin = 0, xmax = 6000, ymin = 750, ymax = 2000, alpha = .25, fill = "#4DBBD5FF") + 
+  annotate("rect", xmin = 1500, xmax = 6000, ymin = 0, ymax = 750, alpha = .25, fill = "#4DBBD5FF") +
+  annotate("rect", xmin = 0, xmax = 1500, ymin = 0, ymax = 750, alpha = .25, fill = "#E64B35FF") +
+  annotate(geom = "text", x = 750, y = 1500, label = paste0("(n=15537)"), size = 4.5, color = "blue") +
+  annotate(geom = "text", x = 4000, y = 1500, label = paste0("(n=6)"), size = 4.5, color = "blue")
+
+# plot altogether & save
+scatter_feature_plots_all <- cowplot::plot_grid(scatter_feature_plots$nCount_vs_nFeature, 
+                                                ncol = 1)
+cowplot::save_plot(filename = paste(qc_plots_dir, "qc_feature_scatter_plots_unfiltered.pdf", sep = "/"), 
+                   plot = scatter_feature_plots_all, ncol = 1, base_height = 7, base_width = 8)
+
+# print
+print(scatter_feature_plots_all)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(qc_plots_dir, "qc_feature_scatter_plots_unfiltered.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+Based on the plots highlighted above it was decided a few thresholds to apply and filter potentially bad quality cells. See below the thresholds applied.  
+
+<br>
+
+```{r filtering - params}
+
+## Filtering 
+
+# parameters to apply the filtering
+params <- list("max_nFeature" = 750, "max_nCount" = 1500)
+
+# apply the filtering
+cre3_seu <- subset(cre3_seu, subset = nFeature_RNA < params$max_nFeature & nCount_RNA < params$max_nCount)
+
+```
+
+The filtering applied to keep a cell was the following: 
+
+   + maximum number of genes expressed lower to `r params$max_nFeature`.
+   
+   + maximum number of total sequences/reads/molecules (or UMIs) lower to `r params$max_nCount`.
+
+<br>
+
+After applying the filters, from `r nrow(cre3_seu@assays$RNA@counts)` genes it was obtained `r ncol(cre3_seu@assays$RNA@counts)` cells.
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+### Normalization
+
+<br>
+
+The filtered gene expression count table was normalized with the function `NormalizeData()` using the `normalization.method = "LogNormalize"` and `scale.factor = 10000`. This will divide the counts by the total number of sequences *per* cell and multiply the result by 10000. Finally, this will by natural-log transformed using log1p.
+
+```{r normalization}
+
+## Normalization
+
+cre3_seu <- NormalizeData(cre3_seu, normalization.method = "LogNormalize", scale.factor = 10000)
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+### Feature selection
+
+<br>
+
+It was selected the default 750 features most variable across the data set with the function `FindVariableFeatures()` using the following parameters: `selection.method = "vst"` and `nfeatures = 750`. 
+
+Usually 2 K features are chosen for data sets with more than 10 K genes, which represents less than 20% of the genes. Therefore, it was chosen 750 variable features in order to represent ~16% of all variable features for *P. chabaudi* **cre3** sample.
+
+<br>
+
+```{r feature selection, fig.width=14, fig.height=6}
+
+## Feature selection
+
+# find variable features
+cre3_seu <- FindVariableFeatures(cre3_seu, selection.method = "vst", nfeatures = 750)
+
+# retrieve the names of the top30 most abundant to add the names to the plot
+top30 <- head(VariableFeatures(cre3_seu), 30)
+
+# plot variable features with and without labels
+var_feature_plot <- list()
+var_feature_plot[["plot1"]] <- VariableFeaturePlot(cre3_seu)
+var_feature_plot[["plot2"]] <- LabelPoints(plot = var_feature_plot[["plot1"]], points = top30, repel = TRUE)
+
+# save
+var_feature_plot_all <- cowplot::plot_grid(var_feature_plot$plot1, var_feature_plot$plot2, ncol = 2)
+
+# make dir
+plots_folder <- "../results/cre3/plots"
+if( ! dir.exists(plots_folder) ) dir.create(plots_folder)
+
+# save plot
+cowplot::save_plot(filename = paste(plots_folder, "variable_features_n750.pdf", sep = "/"),
+                   plot = var_feature_plot_all, base_width=14, base_height=6)
+
+# print
+CombinePlots(plots = list(var_feature_plot[["plot1"]], var_feature_plot[["plot2"]]))
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plots_folder, "variable_features_n750.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+### Scaling data
+
+<br>
+
+The features were scaled prior to dimensional reduction in order to reduce the effect of highly variable and expressed genes/features over others. This was achieved by applying the function `ScaleData()` providing all the genes (n=`r length(cre3_seu@assays$RNA@counts@Dimnames[[1]])`). 
+
+<br>
+
+```{r scaling data}
+
+## Scaling data
+
+# retrive gene names
+gene_names <- rownames(cre3_seu) # 4554
+
+# run scaling
+cre3_seu <- ScaleData(object = cre3_seu, features = gene_names)
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+### Dimensional reduction: PCA
+
+<br>
+
+The Principal Component Analysis (PCA) was determined for the 750 most variable features/genes determined above (where resides most of the variation).  
+
+<br>
+
+```{r dim reduction - pca, fig.width=10, fig.height=10}
+
+## Dimensional reduction - PCA
+
+# run PCA
+cre3_seu <- RunPCA(object = cre3_seu, features = VariableFeatures(object = cre3_seu))
+  
+# visualize the PCA
+dim_pcs_pca_plot <- VizDimLoadings(cre3_seu, dims = 1:4, reduction = "pca")
+
+# save 
+ggsave(filename = paste(plots_folder, "dim_loads_PCs1_4_dotplot.pdf", sep = "/"), 
+       plot = dim_pcs_pca_plot, width=10, height=10)
+ 
+# print
+print(dim_pcs_pca_plot)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plots_folder, "dim_loads_PCs1_4_dotplot.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+The genes change quite well across the 3 first axes.  
+
+<br>
+
+```{r plot pca, fig.height=6.5, fig.width=9}
+
+# plot PCA
+dim_pcs_pca_plot_2 <- list()
+dim_pcs_pca_plot_2[[1]] <- DimPlot(cre3_seu, reduction = "pca", dims = c(1,2))
+dim_pcs_pca_plot_2[[2]] <- DimPlot(cre3_seu, reduction = "pca", dims = c(1,3))
+dim_pcs_pca_plot_2[[3]] <- DimPlot(cre3_seu, reduction = "pca", dims = c(2,3))
+
+# plot altogether
+dim_pcs_pca_plot_2_all <- cowplot::plot_grid(plotlist = list(dim_pcs_pca_plot_2[[1]], 
+                                             dim_pcs_pca_plot_2[[2]], 
+                                             dim_pcs_pca_plot_2[[3]]))
+
+# save 
+cowplot::save_plot(filename = paste(plots_folder, "PCA_plots.pdf", sep = "/"), 
+                   plot = dim_pcs_pca_plot_2_all, 
+                   ncol = 2, base_height=6.5, base_width=5)
+
+# print
+print(dim_pcs_pca_plot_2_all)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plots_folder, "PCA_plots.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+Above it is highlighted the first 3 PCs combinations. 
+
+The heatmaps below show for each principal component how a fraction of highly variable genes is expressed across 100 cells. It is possible to see that at least for the first 20 PCs a change in the expression of these genes across the 100 cells.
+
+<br>
+
+```{r plot heatmap - pca, fig.width=20, fig.height=20}
+
+## Print heatmap that shows the variability of the data 
+
+# save
+pdf(file = paste(plots_folder, "heatmap_dim_reduction_top_20_PCs.pdf", sep = "/"), 
+    width = 20, height = 20)
+DimHeatmap(cre3_seu, dims = 1:20, cells = 1000, balanced = TRUE, ncol = 4)
+dev.off()
+
+# print
+print(
+  DimHeatmap(cre3_seu, dims = 1:20, cells = 1000, balanced = TRUE, ncol = 4)
+)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plots_folder, "heatmap_dim_reduction_top_20_PCs.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+In addition to the plot above, it was performed a jackstraw analysis and plot that highlights the significance of PCs that starts to decrease dramatically after the first 10 PCs.
+
+<br>
+
+```{r pca - jackstraw, fig.width=14}
+  
+# calculate jackstraw with 100 replicates
+cre3_seu <- JackStraw(cre3_seu, num.replicate = 100, dims = 50)
+cre3_seu <- ScoreJackStraw(cre3_seu, dims = 1:50)
+
+# save 
+pdf(file = paste(plots_folder, "jackstraw_plot_top50_PCs.pdf", sep = "/"), 
+    width = 14) 
+JackStrawPlot(cre3_seu, dims = 1:50)
+dev.off()
+
+# plot
+print(JackStrawPlot(cre3_seu, dims = 1:50))
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plots_folder, "jackstraw_plot_top50_PCs.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+Finally, it was performed an elbow plot that highlights that much of the variation resides across the first 10 PCs. After that it seems to remain relatively stable. 
+
+<br>
+
+```{r pca - elbow plot}
+
+## Plot the elbow plot for PCA
+
+# plot
+elbow_plot <- ElbowPlot(cre3_seu, ndims = 50) + 
+  theme_minimal() + 
+  geom_vline(xintercept = 10, linetype = "dashed") + 
+  theme(axis.text = element_text(size = 14, color = "black"), 
+        axis.title = element_text(size = 14, color = "black"), 
+        text = element_text(size = 14, color = "black")) +
+  annotate("rect", xmin = 0, xmax = 10, ymin = 0, ymax = 10, alpha = .25, fill = "#E64B35FF") +
+  annotate(geom = "text", x = 5, y = 7.5, label = paste0("10 PCs"), size = 4.5, color = "blue") 
+
+# save 
+ggsave(filename = paste(plots_folder, "elbow_plot_PCA.pdf", sep = "/"), 
+       plot = elbow_plot, width = 9)
+
+# print 
+print(elbow_plot)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plots_folder, "elbow_plot_PCA.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+### Clustering
+
+<br>
+
+The next step applied was the clustering. Based on the plots described in the previous section, it was given the first 10 PCs to the function `FindNeighbors()`. Since `resolution` is one important parameter and crucial to determine the number of clusters obtained, it was tested the following values of `resolution` with the function `FindClusters()`: 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60.  
+
+<br>
+
+```{r clustering}
+
+## Clustering
+
+# give the 1st 12 PCs
+set.seed(1024)
+cre3_seu <- FindNeighbors(cre3_seu, dims = 1:10)
+
+# resolutions to test
+res_2_iter <- seq(0.2,0.6, by = 0.05)
+
+# iterate over the different resolutions and return a list of Seurat objects to work with
+cre3_seu_list <- list()
+for ( res in res_2_iter ) {
+  seu <- paste0("cre3_seu_", res)
+  set.seed(1024)
+  cre3_seu_list[[seu]] <- FindClusters(cre3_seu, resolution = res)
+}  
+
+# check how many clusters by resolution
+no_clusters <- lapply(cre3_seu_list, function(x) length(levels(x$seurat_clusters)) )
+clust_df <- data.frame("Seurat_obj" = names(cre3_seu_list), 
+                       "Resolution" = res_2_iter, 
+                       "No_clusters" = unlist(no_clusters))
+
+```
+
+Below it can be found the different number of clusters obtained by using different resolutions. 
+
+It was chosen the resolution value of 0.4 since this gives a number of clusters of 9 similar to what was expected.
+
+<br>
+
+```{r echo=FALSE}
+datatable(data = clust_df, extensions = "Buttons", 
+          caption = "Number of cluster by different resolution tested.", 
+          options = list(dom = "Blfrtip", buttons = c('csv', 'excel')))     
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+### Run non-linear dimensional reduction: UMAP
+
+<br>
+
+Below it is presented the respective UMAP (*Uniform Manifold Approximation and Projection*) for each resolution value tested. 
+<br>
+
+```{r umap - dimensional reduction, fig.width=18, fig.height=17}
+
+## UMAP - dimensional reduction
+
+# iterate over the list
+cre3_seu_umap <- list()
+for ( seu in names(cre3_seu_list) ) {
+  set.seed(1024)
+  cre3_seu_list[[seu]] <- RunUMAP(cre3_seu_list[[seu]], dims = 1:10)
+  cre3_seu_umap[[seu]] <- DimPlot(cre3_seu_list[[seu]], reduction = "umap", label = TRUE) + 
+    ggtitle(paste0("Resolution: ", clust_df[clust_df$Seurat_obj == seu, "Resolution"]))
+}
+
+# plot 
+umap_plot_all <- cowplot::plot_grid(plotlist = cre3_seu_umap, ncol = 3)
+
+# save 
+cowplot::save_plot(filename = paste(plots_folder, "UMAP_plots_by_resolution.pdf", sep = "/"), 
+                   plot = umap_plot_all, ncol = 3, base_height = 12, base_width = 5)
+
+# print
+print(umap_plot_all)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plots_folder, "UMAP_plots_by_resolution.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+### Markers: DGE
+
+<br>
+
+In order to find markers (positive and negative) for all clusters it was run the function `FindAllMarkers()` with the following options: minimum percentage of cells that a gene needs to be expressed in order to consider testing it (`min.pct = 0.25`) and a log2 fold change threshold of 0.25 (`logfc.threshold = 0.25`). The same function was run but only for positive markers (`only.pos = TRUE`). The results are highlighted below. 
+
+<br>
+
+```{r markers}
+
+## find markers
+
+# retrieve the seurat object to work with
+cre3_seu <- cre3_seu_list$cre3_seu_0.4
+
+# retrieve all the markers
+set.seed(1024)
+cre3_markers_all <- FindAllMarkers(cre3_seu, min.pct = 0.25, logfc.threshold = 0.25)
+
+# retrieve only positive markers
+set.seed(1024)
+cre3_markers_pos <- FindAllMarkers(cre3_seu, only.pos = TRUE, 
+                                   min.pct = 0.25, logfc.threshold = 0.25)
+
+# save all
+tables_folder <- "../results/cre3/tables"
+if( ! dir.exists(tables_folder) ) dir.create(tables_folder)
+write.table(x = cre3_markers_all, file = paste(tables_folder, "all_cluster_markers.tsv", sep = "/"), 
+            sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+write.table(x = cre3_markers_pos, file = paste(tables_folder, "positive_cluster_markers.tsv", sep = "/"), 
+            sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+
+```
+
+Below appear the tables, one with all markers (positive and negative) and other with only the positive markers. 
+
+<br>
+
+```{r echo=FALSE}
+datatable(data = cre3_markers_all, extensions = "Buttons", 
+          caption = "Table with all markers (positive and negative) for all clusters.", 
+          options = list(dom = "Blfrtip", buttons = c('csv', 'excel')))     
+```
+
+<br>
+
+```{r echo=FALSE}
+datatable(data = cre3_markers_pos, extensions = "Buttons", 
+          caption = "Table with positive markers only for all clusters.", 
+          options = list(dom = "Blfrtip", buttons = c('csv', 'excel')))     
+```
+
+<br>
+
+```{r markers - plot}
+
+## Plot positive markers
+
+# retrive the top10 positive markers by cluster
+top10_pos_markers <- cre3_markers_pos %>% 
+  group_by(cluster) %>% 
+  arrange(desc(avg_log2FC), p_val_adj) %>% 
+  top_n(10) %>% 
+  arrange(cluster)
+
+```
+
+The top 10 markers by cluster are highlighted below in violin plots. 
+
+   + **Cluster 0**
+
+<br>
+
+```{r plot markers - 0, fig.width = 20, fig.height=14}
+
+# top10 markers cluster 0
+top10_markers_clus0 <- VlnPlot(object = cre3_seu, 
+                               features = top10_pos_markers[top10_pos_markers$cluster == "0", 
+                                                            "gene", drop = TRUE])
+
+# save
+cowplot::save_plot(filename = paste(plots_folder, "violin_plots_top10_markers_cluster0.pdf", sep = "/"), 
+                   plot = top10_markers_clus0, base_height = 18, base_width = 20)
+
+# print
+print(top10_markers_clus0)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plots_folder, "violin_plots_top10_markers_cluster0.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+   + **Cluster 1**
+
+<br>
+
+```{r plot markers - 1, fig.width = 20, fig.height=14}
+
+# top10 markers cluster 1
+top10_markers_clus1 <- VlnPlot(object = cre3_seu, 
+                               features = top10_pos_markers[top10_pos_markers$cluster == "1", 
+                                                            "gene", drop = TRUE], 
+                               ncol = 3)
+
+# save
+cowplot::save_plot(filename = paste(plots_folder, "violin_plots_top10_markers_cluster1.pdf", sep = "/"), 
+                   plot = top10_markers_clus1, base_height = 14, base_width = 20)
+
+# print
+print(top10_markers_clus1)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plots_folder, "violin_plots_top10_markers_cluster1.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+   + **Cluster 2**
+
+<br>
+
+```{r plot markers - 2, fig.width = 20, fig.height=18}
+
+# top10 markers cluster 2
+top10_markers_clus2 <- VlnPlot(object = cre3_seu, 
+                               features = top10_pos_markers[top10_pos_markers$cluster == "2", 
+                                                            "gene", drop = TRUE], 
+                               ncol = 3)
+
+# save
+cowplot::save_plot(filename = paste(plots_folder, "violin_plots_top10_markers_cluster2.pdf", sep = "/"), 
+                   plot = top10_markers_clus2, base_height = 18, base_width = 20)
+
+# print
+print(top10_markers_clus2)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plots_folder, "violin_plots_top10_markers_cluster2.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+   + **Cluster 3**
+
+<br>
+
+```{r plot markers - 3}
+
+# top10 markers cluster 3
+top10_markers_clus3 <- VlnPlot(object = cre3_seu, 
+                               features = top10_pos_markers[top10_pos_markers$cluster == "3", 
+                                                            "gene", drop = TRUE])
+
+# save
+cowplot::save_plot(filename = paste(plots_folder, "violin_plots_top10_markers_cluster3.pdf", sep = "/"), 
+                   plot = top10_markers_clus3)
+
+# print
+print(top10_markers_clus3)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plots_folder, "violin_plots_top10_markers_cluster3.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+   + **Cluster 4**
+
+<br>
+
+```{r plot markers - 4, fig.width = 20, fig.height=18}
+
+# top10 markers cluster 4
+top10_markers_clus4 <- VlnPlot(object = cre3_seu, 
+                               features = top10_pos_markers[top10_pos_markers$cluster == "4", 
+                                                            "gene", drop = TRUE], 
+                               ncol = 3)
+
+# save
+cowplot::save_plot(filename = paste(plots_folder, "violin_plots_top10_markers_cluster4.pdf", sep = "/"), 
+                   plot = top10_markers_clus4, base_height = 18, base_width = 20)
+
+# print
+print(top10_markers_clus4)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plots_folder, "violin_plots_top10_markers_cluster4.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+   + **Cluster 5**
+
+<br>
+
+```{r plot markers - 5, fig.width = 20, fig.height=12}
+
+# top10 markers cluster 5
+top10_markers_clus5 <- VlnPlot(object = cre3_seu, 
+                               features = top10_pos_markers[top10_pos_markers$cluster == "5", 
+                                                            "gene", drop = TRUE], 
+                               ncol = 3)
+
+# save
+cowplot::save_plot(filename = paste(plots_folder, "violin_plots_top10_markers_cluster5.pdf", sep = "/"), 
+                   plot = top10_markers_clus5, base_height = 12, base_width = 20)
+
+# print
+print(top10_markers_clus5)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plots_folder, "violin_plots_top10_markers_cluster5.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+   + **Cluster 6**
+
+<br>
+
+>WARNING: it was not found markers for cluster 6.
+
+```{r plot markers - 6, eval=FALSE, echo=TRUE, fig.width = 20, fig.height=18}
+
+# top10 markers cluster 6
+top10_markers_clus6 <- VlnPlot(object = cre3_seu, 
+                               features = top10_pos_markers[top10_pos_markers$cluster == "6", 
+                                                            "gene", drop = TRUE], 
+                               ncol = 3)
+
+# save
+cowplot::save_plot(filename = paste(plots_folder, "violin_plots_top10_markers_cluster6.pdf", sep = "/"), 
+                   plot = top10_markers_clus6, base_height = 18, base_width = 20)
+
+# print
+print(top10_markers_clus6)
+
+```
+
+<br>
+
+   + **Cluster 7**
+
+<br>
+
+```{r plot markers - 7, fig.width = 12}
+
+# top10 markers cluster 7
+top10_markers_clus7 <- VlnPlot(object = cre3_seu, 
+                               features = top10_pos_markers[top10_pos_markers$cluster == "7", 
+                                                            "gene", drop = TRUE], 
+                               ncol = 2)
+
+# save
+cowplot::save_plot(filename = paste(plots_folder, "violin_plots_top10_markers_cluster7.pdf", sep = "/"), 
+                   plot = top10_markers_clus7, base_height = 18, base_width = 20)
+
+# print
+print(top10_markers_clus7)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plots_folder, "violin_plots_top10_markers_cluster7.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+   + **Cluster 8**
+
+<br>
+
+```{r plot markers - 8, fig.width = 20, fig.height=18}
+
+# top10 markers cluster 8
+top10_markers_clus8 <- VlnPlot(object = cre3_seu, 
+                               features = top10_pos_markers[top10_pos_markers$cluster == "8", 
+                                                            "gene", drop = TRUE], 
+                               ncol = 3)
+
+# save
+cowplot::save_plot(filename = paste(plots_folder, "violin_plots_top10_markers_cluster8.pdf", sep = "/"), 
+                   plot = top10_markers_clus8, base_height = 18, base_width = 20)
+
+# print
+print(top10_markers_clus8)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plots_folder, "violin_plots_top10_markers_cluster8.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+<br>
+
+<br>
+
+Below it appears the expression of **PCHAS-121500**, **PCHAS-080600**, **PCHAS-104020**, **PCHAS-111660**, **PCHAS-101390** across the cells. 
+
+<br>
+
+```{r umap - features, fig.height=12, fig.width=8}
+
+## Plot UMAP by features
+genes_interest <- c("PCHAS-121500", "PCHAS-080600", "PCHAS-104020",
+                    "PCHAS-111660","PCHAS-101390")
+FeaturePlot(cre3_seu, features = genes_interest)
+
+```
+
+<br>
+
+Heatmap of top 10 positive markers by cluster is highlighted below. The top 10 markers *per* cluster seem to be good markers for the clusters in question. 
+
+<br>
+
+```{r markers - heatmap, fig.width=10, fig.height=10}
+
+## Plot heatmap of top 10 markers
+
+# retrieve data
+top10_pos_markers <- cre3_markers_pos %>% 
+  group_by(cluster) %>% 
+  top_n(n = 10, wt = avg_log2FC)
+
+# plot heatmap
+heatmap_top10_markers <- DoHeatmap(cre3_seu, features = top10_pos_markers$gene) + NoLegend()
+
+# save
+ggsave(filename = paste(plots_folder, "heatmap_top10_markers_by_cluster.pdf", sep = "/"), 
+       plot = heatmap_top10_markers)
+
+# print
+print(heatmap_top10_markers)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+## Download the latest figure
+downloadthis::download_file(
+  path = paste(plots_folder, "heatmap_top10_markers_by_cluster.pdf", sep = "/"),
+  output_name = "plot",
+  button_label = "Download plot",
+  button_type = "danger",
+  has_icon = TRUE,
+  icon = "fa fa-save",
+  self_contained = TRUE
+)
+```
+
+```{r save R objects}
+
+## save R objects
+
+# create dir
+r_objs_folder <- "../results/cre3/R_objects"
+if( ! dir.exists(r_objs_folder) ) dir.create(r_objs_folder)
+
+# save R objects
+saveRDS(object = qc_plots, file = paste(r_objs_folder, "qc_plots.rds", sep = "/"))
+saveRDS(object = cre3_seu_list, file = paste(r_objs_folder, "cre3_seu_list.rds", sep = "/"))
+saveRDS(object = cre3_seu, file = paste(r_objs_folder, "cre3_seu.rds", sep = "/"))
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+    
+## Deliver
+
+Folders inside the project folder:
+
+   + results: folder that contains all the results obtained in this analysis;
+
+   + report: folder that contains the report and code used herein;
+
+   + data: folder that contains the data used herein;
+   
+   + scripts: folder that contains the scripts used herein;
+
+   + info: folder that contains some useful information (*i.e.*, papers, etc) used herein;
+  
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+#### R packages used and respective versions
+
+```{r References, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+## R packages and versions used in these analyses
+
+sessionInfo()
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+<br>
+<br>
+
+
+## References
+
+\printbibliography

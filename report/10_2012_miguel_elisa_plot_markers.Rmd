@@ -1,0 +1,606 @@
+---
+title: 'Report: Plot markers upon integrated Cre3 and Lox2 scRNA samples'
+author: "Jingtao Lilue and António Sousa - UBI-IGC (e-mail: <agsousa@igc.gulbenkian.pt>)"
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output: 
+  html_document:
+    toc: true 
+    toc_float: true
+    theme: united
+    code_folding: hide
+bibliography: bibliography.bib
+---
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## Request
+
+<br>
+
+This report includes a description and the results of the analyses requested by Elisa Jentho at 01/06/2021: 
+
+   1. Plot marker genes upon integrated Cre3 and Lox2 *Plasmodium chabaudi* scRNA-seq samples with `Seurat`: 
+   
+      + **Markers_for_UMAP.xlsx**: plot the list of markers in the overlapped UMAP of the integrated Cre3 and Lox2 samples.
+      
+      + **More_markers.xlsx**: plot the list of markers separately across the two UMAPs of the integrated Cre3 and Lox2 samples. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	fig.align = "center",
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+```{r klippy, echo=FALSE}
+klippy::klippy(position = c('top', 'right'))
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## About this report
+
+<br>
+
+The R version used was `r paste0(version$major, ".", version$minor)` [@r]. This report was built with the `rmarkdown` R package (v.`r packageVersion("rmarkdown")`) [@rmarkdown_1; @rmarkdown_2; @rmarkdown_3]. See the full list of packages and versions used at the end of this report - **R packages used and respective versions**.
+
+The integrated 10x Lox2 and Cre3 samples processed previously were imported to plot the markers upon the UMAPs with the `Seurat` R package (v.`r packageVersion("Seurat")`) [@seurat_1; @seurat_2; @seurat_3; @seurat_4].
+
+The figures and tables displayed through the report can be download in *pdf* and *tab-separated* format by clicking on the bottom left **Download plot** and **Download table** button that appears after each plot and table, respectively. 
+
+```{r seed}
+
+## Set seed 
+set.seed(seed = 1024) # to keep reproducibility
+
+```
+
+```{r import packages, message=FALSE, warning=FALSE}
+
+## Import packages 
+
+library("dplyr", quietly = TRUE)
+library("DT", quietly = TRUE) # package to print nice in the html report 
+library("Seurat", quietly = TRUE)
+library("gplots", quietly = TRUE)
+library("Matrix", quietly = TRUE)
+library("ggplot2", quietly = TRUE)
+library("tidyr", quietly = TRUE)
+library("readxl", quietly = TRUE)
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+## Data analysis
+
+<br>
+
+### Import data: Cre3 & Lox2 integrated samples
+
+<br>
+
+```{r import seu int objs}
+
+## Import Seurat object with the re3 & Lox2 integrated samples
+
+# import obj integrated
+seu <- readRDS(file = "../results/int/R_objects/seu.rds")
+
+```
+
+<br>
+
+<br>
+
+### Import data: Marker lists
+
+<br>
+
+```{r import mkr lists}
+
+## Import marker lists 
+
+# marker lists to import 
+markers2import <- list.files(path = "../data/markers_to_plot", full.names = TRUE)
+names(markers2import) <- c("int", "sep") 
+# "int": integrated/overlapped UMAP marker list | "sep": separated UMAP marker list
+
+# import lists
+markers <- list(
+  "int" = read_excel(path = markers2import[1], col_names = TRUE), 
+  "sep" = read_excel(path = markers2import[2], col_names = FALSE)
+)
+
+# parse lists
+markers$int = markers$int %>% select_if(is.character)
+colnames(markers$sep) <- "Genes"
+
+```
+
+The two lists of markers can be found below. 
+
+<br>
+
+```{r echo=FALSE}
+datatable(data = markers$int, extensions = "Buttons", 
+          caption = "Table with the list of markers to plot/highlight in the overlapped UMAP of the integrated Cre3 and Lox2 samples. Imported from the excel file provided: Markers_for_UMAP.xlsx.", 
+          options = list(dom = "Blfrtip", buttons = c('csv', 'excel')))     
+```
+
+<br>
+
+```{r echo=FALSE}
+datatable(data = markers$sep, extensions = "Buttons", 
+          caption = "Table with the list of markers to plot/highlight separately across the two UMAPs of the integrated Cre3 and Lox2 samples. Imported from the excel file provided: More_markers.xlsx.", 
+          options = list(dom = "Blfrtip", buttons = c('csv', 'excel')))     
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+### Plot markers by cluster
+
+<br>
+
+To plot markers it was used the integrated `Seurat` object with the Cre3 and Lox2 samples. The assay used was `RNA` and the slot `data` with the counts normalized with the `LogNormalize` method ([read more](https://satijalab.org/seurat/reference/normalizedata)). 
+
+The individual plots of the cluster markers highlighted through the integrated UMAPs can be found at: `results/markers/int/` (with each cluster folder holding their respective markers).  
+
+```{r plot int marker list}
+
+## Plot list of markers by cluster
+
+# folder to save results
+plot_markers <- "../results/markers"
+if ( ! dir.exists(plot_markers) ) dir.create(plot_markers)
+
+# list to save plots
+marker_plots[["sep"]] <- marker_plots[["int"]] <- marker_plots <- list()
+
+# check assay 
+stopifnot(DefaultAssay(seu) == "RNA")
+
+for ( clt in colnames(markers$int) ) { # loop over cols/cluster markers
+  clt_name <- gsub(pattern = " ", replacement = "-", x = clt)
+  
+  # create new folder for the cluster
+  plot_clt_folder <- paste(plot_markers, paste0("int/", clt_name), sep = "/")
+  if ( ! dir.exists(plot_clt_folder) ) dir.create(plot_clt_folder, recursive = TRUE)
+  
+  marker_genes <- markers$int[,clt,drop=TRUE] # retrieve the marker genes for each col/cluster
+  
+  # save to list
+  marker_plots$int[[clt_name]] <- list()
+  
+  for ( mkr in marker_genes ) { # loop over marker genes within a cluster
+    if( ! is.na(mkr) ) { # plot them only if are not 'NA'
+      stopifnot( mkr %in% row.names(seu) ) # stop if gene does not exist in the Seurat obj
+      marker_plots$int[[clt_name]][[mkr]] <- FeaturePlot(object = seu, features = mkr, 
+                                                         slot = "data", reduction = "umap", 
+                                                         pt.size = 0.001)
+      ggsave(filename = paste(plot_clt_folder, paste0(clt_name, "_", mkr, "_gene_UMAP.pdf"), sep = "/"), 
+             plot = marker_plots$int[[clt_name]][[mkr]], height = 5, width = 5)
+    }
+  }
+}
+
+```
+
+<br>
+
+<br>
+
+   + **Cluster 0**
+   
+<br>
+
+```{r cluster 0, fig.width=10, fig.height=6}
+cowplot::plot_grid(plotlist = marker_plots$int$`Cluster-0`)
+```
+
+<br>
+
+<br>
+
+   + **Cluster 1**
+   
+<br>
+
+```{r cluster 1, fig.width=10, fig.height=6}
+cowplot::plot_grid(plotlist = marker_plots$int$`Cluster-1`)
+```
+
+<br>
+
+<br>
+
+   + **Cluster 2**
+   
+<br>
+
+```{r cluster 2, fig.width=8, fig.height=7}
+cowplot::plot_grid(plotlist = marker_plots$int$`Cluster-2`)
+```
+
+<br>
+
+<br>
+
+   + **Cluster 3**
+   
+<br>
+
+```{r cluster 3, fig.width=10, fig.height=6}
+cowplot::plot_grid(plotlist = marker_plots$int$`Cluster-3`)
+```
+
+<br>
+
+<br>
+
+   + **Cluster 4**
+   
+<br>
+
+```{r cluster 4, fig.width=10, fig.height=6}
+cowplot::plot_grid(plotlist = marker_plots$int$`Cluster-4`)
+```
+
+<br>
+
+<br>
+
+   + **Cluster 5**
+   
+<br>
+
+```{r cluster 5, fig.width=10, fig.height=6}
+cowplot::plot_grid(plotlist = marker_plots$int$`Cluster-5`)
+```
+
+<br>
+
+<br>
+
+   + **Cluster 6**
+   
+<br>
+
+```{r cluster 6, fig.width=10, fig.height=6}
+cowplot::plot_grid(plotlist = marker_plots$int$`Cluster-6`)
+```
+
+<br>
+
+<br>
+
+   + **Cluster 7**
+   
+<br>
+
+```{r cluster 7, fig.width=10, fig.height=6}
+cowplot::plot_grid(plotlist = marker_plots$int$`Cluster-7`)
+```
+
+<br>
+
+<br>
+
+   + **Cluster 8**
+   
+<br>
+
+```{r cluster 8, fig.width=10, fig.height=6}
+cowplot::plot_grid(plotlist = marker_plots$int$`Cluster-8`)
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+### Plot other markers split by sample
+
+<br>
+
+To plot markers it was used the integrated `Seurat` object with the Cre3 and Lox2 samples. The assay used was `RNA` and the slot `data` with the counts normalized with the `LogNormalize` method ([read more](https://satijalab.org/seurat/reference/normalizedata)). 
+
+The individual plots of the markers split by sample highlighted through the integrated UMAPs can be found at: `results/markers/sep/`.  
+
+>WARNING: The genes PCHAS-051500 and PCHAS-141240 provided as markers to plot were not found across the scRNA-seq data sets, and, thus they were not plotted.  
+
+```{r plot sep marker list}
+
+## Plot list of markers by sample
+
+# folder to save results
+plot_sep_markers <- "../results/markers/sep"
+if ( ! dir.exists(plot_sep_markers) ) dir.create(plot_sep_markers)
+
+# Seurat: split objects by sample
+sobjList <- SplitObject(seu, split.by = "orig.ident") 
+
+# check assay 
+stopifnot(DefaultAssay(seu) == "RNA")
+stopifnot( c(DefaultAssay(sobjList$Cre3), DefaultAssay(sobjList$Lox2)) == "RNA" )
+for ( mkr in markers$sep$Genes ) { # loop over marker genes within a cluster
+  #stopifnot( mkr %in% row.names(seu) ) # stop if gene does not exist in the Seurat obj
+  if ( mkr %in% row.names(seu) ) {
+    marker_plots$sep[[mkr]] <- list()
+    for ( sobj in rev(names(sobjList)) ) {
+            marker_plots$sep[[mkr]][[sobj]] <- FeaturePlot(object = sobjList[[sobj]], features = mkr,
+                                                           slot = "data", reduction = "umap", 
+                                                           pt.size = 0.001)
+            ggsave(filename = paste(plot_sep_markers, paste0(sobj, "_", mkr, "_gene_UMAP_split_by_sample.pdf"), sep = "/"), 
+                   plot = marker_plots$sep[[mkr]][[sobj]], height = 5, width = 5)
+    }
+  }
+}
+
+```
+
+<br>
+
+<br>
+
+   + **Marker PCHAS-021240**
+   
+<br>
+
+```{r PCHAS-021240, fig.width=10, fig.height=5}
+cowplot::plot_grid(plotlist = marker_plots$sep$`PCHAS-021240`)
+```
+
+<br>
+
+<br>
+
+   + **Marker PCHAS-121330**
+   
+<br>
+
+```{r PCHAS-121330, fig.width=10, fig.height=5}
+cowplot::plot_grid(plotlist = marker_plots$sep$`PCHAS-121330`)
+```
+
+<br>
+
+<br>
+
+   + **Marker PCHAS-100390**
+   
+<br>
+
+```{r PCHAS-100390, fig.width=10, fig.height=5}
+cowplot::plot_grid(plotlist = marker_plots$sep$`PCHAS-100390`)
+```
+
+<br>
+
+<br>
+
+   + **Marker PCHAS-140270**
+   
+<br>
+
+```{r PCHAS-140270, fig.width=10, fig.height=5}
+cowplot::plot_grid(plotlist = marker_plots$sep$`PCHAS-140270`)
+```
+
+<br>
+
+<br>
+
+   + **Marker PCHAS-143360**
+   
+<br>
+
+```{r PCHAS-143360, fig.width=10, fig.height=5}
+cowplot::plot_grid(plotlist = marker_plots$sep$`PCHAS-143360`)
+```
+
+<br>
+
+<br>
+
+   + **Marker PCHAS-110810**
+   
+<br>
+
+```{r PCHAS-110810, fig.width=10, fig.height=5}
+cowplot::plot_grid(plotlist = marker_plots$sep$`PCHAS-110810`)
+```
+
+<br>
+
+<br>
+
+   + **Marker PCHAS-040720**
+   
+<br>
+
+```{r PCHAS-040720, fig.width=10, fig.height=5}
+cowplot::plot_grid(plotlist = marker_plots$sep$`PCHAS-040720`)
+```
+
+<br>
+
+<br>
+
+   + **Marker PCHAS-031680**
+   
+<br>
+
+```{r PCHAS-031680, fig.width=10, fig.height=5}
+cowplot::plot_grid(plotlist = marker_plots$sep$`PCHAS-031680`)
+```
+
+<br>
+
+<br>
+
+   + **Marker PCHAS-122070**
+   
+<br>
+
+```{r PCHAS-122070, fig.width=10, fig.height=5}
+cowplot::plot_grid(plotlist = marker_plots$sep$`PCHAS-122070`)
+```
+
+<br>
+
+<br>
+
+   + **Marker PCHAS-142660**
+   
+<br>
+
+```{r PCHAS-142660, fig.width=10, fig.height=5}
+cowplot::plot_grid(plotlist = marker_plots$sep$`PCHAS-142660`)
+```
+
+<br>
+
+<br>
+
+   + **Marker PCHAS-146340**
+   
+<br>
+
+```{r PCHAS-146340, fig.width=10, fig.height=5}
+cowplot::plot_grid(plotlist = marker_plots$sep$`PCHAS-146340`)
+```
+
+<br>
+
+<br>
+
+   + **Marker PCHAS-072660**
+   
+<br>
+
+```{r PCHAS-072660, fig.width=10, fig.height=5}
+cowplot::plot_grid(plotlist = marker_plots$sep$`PCHAS-072660`)
+```
+
+<br>
+
+<br>
+
+   + **Marker PCHAS-081890**
+   
+<br>
+
+```{r PCHAS-081890, fig.width=10, fig.height=5}
+cowplot::plot_grid(plotlist = marker_plots$sep$`PCHAS-081890`)
+```
+
+<br>
+
+<br>
+
+   + **Marker PCHAS-113160**
+   
+<br>
+
+```{r PCHAS-113160, fig.width=10, fig.height=5}
+cowplot::plot_grid(plotlist = marker_plots$sep$`PCHAS-113160`)
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+    
+## Deliver
+
+Folders inside the project folder:
+
+   + results: folder that contains all the results obtained in this analysis;
+
+   + report: folder that contains the report and code used herein;
+
+   + data: folder that contains the data used herein;
+   
+   + scripts: folder that contains the scripts used herein;
+
+   + info: folder that contains some useful information (*i.e.*, papers, etc) used herein;
+  
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+
+#### R packages used and respective versions
+
+```{r References, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+## R packages and versions used in these analyses
+
+sessionInfo()
+
+```
+
+<br>
+
+<br>
+
+---
+
+<br>
+
+<br>
+<br>
+<br>
+
+
+## References
+
+\printbibliography
