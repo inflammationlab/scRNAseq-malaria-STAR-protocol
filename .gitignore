@@ -14,3 +14,4 @@
 !/scripts/velocyto_script.sh
 !/scripts/export_dge_plotted_heatmap.R
 !/scripts/export_RNA_counts_and_norm_data_script.R
+!/docs/*
