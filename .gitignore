@@ -2,6 +2,7 @@
 !*/
 !README.md
 !.gitignore
+!.gitattributes
 !/report/01_2012_miguel_elisa_cre3_processing.Rmd
 !/report/02_2012_miguel_elisa_lox2_processing.Rmd
 !/report/07_2012_miguel_elisa_cre3_lox2_integration_w_new_plots.Rmd
